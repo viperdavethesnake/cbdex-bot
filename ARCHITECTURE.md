@@ -1,6 +1,6 @@
 # Architecture: Base DEX Data Acquisition Layer
 
-**Specification Reference:** TRD v1.4
+**Specification Reference:** TRD v1.5
 
 ---
 
@@ -205,16 +205,19 @@ def classic_price(amount0_in: float, amount0_out: float,
 | **Flat** | Day with minimum σ² | API accuracy during low activity |
 | **Mean** | Day closest to median σ² | General baseline accuracy |
 
-### 5.2 Audit Thresholds
+### 5.2 Audit Thresholds (TRD v1.5)
 
-| Metric | Target | Rationale |
+Three metrics determine whether the Fast Path data is approved for ML training:
+
+| Metric | Target | Why It Matters for DEX Signal Generation |
 |---|---|---|
-| Price Correlation (ρ) | > 0.999 | Catches shape divergence |
-| MAE | < 0.10% | Accounts for same-second ordering ambiguity |
-| Volume Error | < 1% | Catches aggregation errors |
-| TVL Error | null | No Fast Path TVL — not a fail condition |
-| Dropped Candles | 0 | Data loss is unacceptable |
-| Filled Candles | Info only | Logged, not gated |
+| **MAE** | < 0.10% | Price error must stay below minimum signal threshold or model learns wrong signals |
+| **Volume Error** | < 1% | Volume is a key ML feature — systematic error corrupts feature magnitude |
+| **Dropped Candles** | 0 | Missing real swap activity creates time series gaps. Zero-volume ghost candles excluded. |
+| **TVL Error** | null | No Fast Path TVL — not a fail condition. TVL always from Truth Path. |
+| **Filled Candles** | Info only | Empty windows (no swaps) forward-filled by Fast Path — logged, not gated |
+
+**Not included:** Pearson correlation was removed in TRD v1.5. It is a securities-market statistical tool inappropriate for DEX data validation. It fails mechanically on low-variance days due to methodology differences between GeckoTerminal's TWAP-style pricing and on-chain last-swap prices, even when the data is perfectly usable for signal generation. MAE captures what matters: is the price error small enough that the model learns correct signals?
 
 ### 5.3 TVL Path
 
@@ -222,13 +225,13 @@ TVL always comes from the Truth Path regardless of audit verdict:
 - Source: `PoolHourData` entity from The Graph
 - Resolution: Hourly, forward-filled to 1-minute buckets
 - Audit report field: `tvl_source: "truth_path_hourly_forward_filled"`
-- `tvl_error_pct`: always `null`
+- `tvl_error_pct`: always `null` — no Fast Path TVL to compare against
 
 ---
 
 ## 6. The Graph Pagination
 
-**All GraphQL queries must use `id_gt` cursor pagination.** The `skip` parameter has a hard ceiling of 5,000 records and will silently truncate high-volume pair datasets.
+**All GraphQL queries must use `id_gt` cursor pagination.** The `skip` parameter has a hard ceiling of 5,000 records and will silently truncate high-volume pair datasets. All three audit windows exceeded 22,000+ swap records — `skip` would have failed on every one.
 
 ```python
 last_id = ""
@@ -258,10 +261,10 @@ while True:
 | Column | Type | Description |
 |---|---|---|
 | `timestamp` | `Datetime[us, UTC]` | 1-minute bucket start |
-| `open` | `Float64` | First trade price in bucket |
-| `high` | `Float64` | Highest trade price |
-| `low` | `Float64` | Lowest trade price |
-| `close` | `Float64` | Last trade price |
+| `open` | `Float64` | First swap price in bucket |
+| `high` | `Float64` | Highest swap price |
+| `low` | `Float64` | Lowest swap price |
+| `close` | `Float64` | Last swap price |
 | `volume_usd` | `Float64` | Σ(Amount_token × Price_swap) in USD |
 | `tvl_usd` | `Float64` | Hourly TVL forward-filled to 1-minute |
 
@@ -277,7 +280,7 @@ while True:
 
 ## 8. Key Technology Decisions
 
-**GeckoTerminal over DexScreener:** DexScreener has no historical OHLCV endpoint. GeckoTerminal provides 6 months of 1-minute history, free tier, no auth, clean `before_timestamp` pagination.
+**GeckoTerminal as Fast Path:** DexScreener has no historical OHLCV endpoint. GeckoTerminal provides 6 months of 1-minute history, free tier, no auth, clean `before_timestamp` pagination — the only viable option.
 
 **Polars for aggregation:** `group_by_dynamic` aggregates millions of raw swap events in a single vectorized pass — 10–50x faster than Pandas.
 
@@ -285,7 +288,7 @@ while True:
 
 **Alchemy over QuickNode:** Alchemy's free tier provides 30M CUs/month. The 90-day gas pull consumes ~2.6M CUs (~8.6% of budget). QuickNode's free tier is ~3× more restrictive.
 
-**Aerodrome Router directly:** Bypasses Coinbase's ~1% service fee — the difference between a viable and non-viable strategy at sub-$100 trade sizes.
+**Aerodrome Router directly:** Bypasses Coinbase's ~1% service fee — the difference between a viable and non-viable strategy at sub-$100 swap sizes.
 
 ---
 

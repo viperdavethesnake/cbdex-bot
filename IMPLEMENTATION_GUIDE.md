@@ -1,6 +1,6 @@
 # Implementation Guide: Base DEX Data Acquisition Layer
 
-**Specification Reference:** TRD v1.4  
+**Specification Reference:** TRD v1.5  
 **Target:** Engineer implementing the data pipeline from scratch
 
 ---
@@ -257,7 +257,7 @@ query GetClassicSwaps($pool: String!, $start: Int!, $end: Int!, $lastId: String!
 
 ### 4.4 Pagination Loop (id_gt — Required)
 
-> ⚠️ **Do not use `$skip`.** Hard ceiling of 5,000 records. High-volume pairs will be silently truncated.
+> ⚠️ **Do not use `$skip`.** Hard ceiling of 5,000 records. High-volume pairs will be silently truncated. All three audit windows exceeded 22,000+ swaps — `skip` would have failed on every one.
 
 ```python
 def fetch_swaps(pool: str, start_ts: int, end_ts: int, query: str) -> list:
@@ -355,24 +355,39 @@ def aggregate_classic_swaps(swaps_df: pl.DataFrame) -> pl.DataFrame:
 
 ## Phase 5: Audit Execution
 
-### 5.1 Metric Calculation
+### 5.1 Metric Calculation (TRD v1.5 — Three Metrics Only)
+
+The audit gate uses MAE, Volume Error, and Dropped Candles. Pearson correlation is not used — it is a securities-market statistical tool that produces misleading results on low-variance DEX trading days.
 
 ```python
-from scipy.stats import pearsonr
-
 def calculate_window_metrics(fast: pl.DataFrame, truth: pl.DataFrame) -> dict:
+    # Filter zero-volume Truth Path ghost candles before gap comparison
+    truth_active = truth.filter(pl.col("volume_usd") > 0)
+
     joined = fast.join(truth, on="timestamp", suffix="_truth")
-    corr, _ = pearsonr(joined["close"].to_list(), joined["close_truth"].to_list())
-    mae_pct = ((joined["close"] - joined["close_truth"]).abs() / joined["close_truth"]).mean() * 100
-    vol_err = abs(fast["volume_usd"].sum() - truth["volume_usd"].sum()) / truth["volume_usd"].sum() * 100
-    dropped = len(set(truth["timestamp"].to_list()) - set(fast["timestamp"].to_list()))
-    filled  = len(set(fast["timestamp"].to_list()) - set(truth["timestamp"].to_list()))
+
+    mae_pct = (
+        (joined["close"] - joined["close_truth"]).abs() / joined["close_truth"]
+    ).mean() * 100
+
+    vol_err = (
+        abs(fast["volume_usd"].sum() - truth["volume_usd"].sum())
+        / truth["volume_usd"].sum() * 100
+    )
+
+    # Dropped: Truth has real swap activity but Fast Path has no candle
+    dropped = len(
+        set(truth_active["timestamp"].to_list()) - set(fast["timestamp"].to_list())
+    )
+
+    filled = len(
+        set(fast["timestamp"].to_list()) - set(truth["timestamp"].to_list())
+    )
 
     return {
-        "price_correlation": round(corr, 6),
         "mae_pct": round(mae_pct, 4),
         "volume_error_pct": round(vol_err, 4),
-        "tvl_error_pct": None,
+        "tvl_error_pct": None,   # Always null — no Fast Path TVL
         "gap_count_dropped": dropped,
         "gap_count_filled": filled,
     }
@@ -382,7 +397,6 @@ def calculate_window_metrics(fast: pl.DataFrame, truth: pl.DataFrame) -> dict:
 
 ```python
 THRESHOLDS = {
-    "price_correlation": (">", 0.999),
     "mae_pct":           ("<", 0.10),
     "volume_error_pct":  ("<", 1.0),
     "gap_count_dropped": ("==", 0),
@@ -393,8 +407,7 @@ def evaluate_window(metrics: dict) -> bool:
         value = metrics.get(key)
         if value is None:
             continue
-        if op == ">" and not (value > threshold): return False
-        if op == "<" and not (value < threshold): return False
+        if op == "<"  and not (value < threshold):  return False
         if op == "==" and not (value == threshold): return False
     return True
 ```
@@ -412,6 +425,7 @@ def generate_report(pair, windows_results):
         "fast_path_source": "GeckoTerminal",
         "tvl_source": "truth_path_hourly_forward_filled",
         "truth_path_source": "The Graph / Aerodrome Subgraph",
+        "trd_version": "v1.5",
         "windows": windows_results,
         "overall_verdict": "PASS" if all(w["pass"] for w in windows_results) else "FAIL",
     }
@@ -490,7 +504,7 @@ print(f"Final rows: {len(df)} | Gaps: {129_600 - len(df)}")
 - [ ] Stratified samples (Spike, Flat, Mean) identified
 - [ ] Truth Path swaps pulled for 3 windows (id_gt pagination)
 - [ ] TVL pulled from PoolHourData, forward-filled to 1-minute
-- [ ] Audit Report generated, all thresholds met, archived
+- [ ] Audit Report (trd_version: v1.5) generated, all thresholds met, archived
 - [ ] Gas series pulled, null-checked, stored
 - [ ] `final_90d.parquet` written with TVL populated for both pairs
 

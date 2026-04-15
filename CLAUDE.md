@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**cbdex-bot** is a Python 3.12 automated trading bot targeting Aerodrome Finance DEX pools on Base mainnet (Chain ID: 8453). It collects historical market data, trains an ML model on regime-classified signals, and executes trades directly via the Aerodrome Router contract using web3.py.
+**cbdex-bot** is a Python 3.12 automated trading bot targeting Aerodrome Finance DEX pools on Base mainnet (Chain ID: 8453). It collects historical market data, trains an ML model on regime-classified signals, and executes swaps directly via the Aerodrome Router smart contract using web3.py.
 
-**Current phase:** Phase 1 — Data ingestion pipeline (TRD v1.4).
+**Current phase:** Phase 1 — Data ingestion pipeline (TRD v1.5).
 
 ## Environment
 
@@ -53,7 +53,12 @@ Alchemy RPC ────► gas.py ───────────────
 
 **Truth Path** (The Graph + Alchemy): Pulls raw on-chain `Swap` events for 3 stratified windows (Spike / Flat / Mean), aggregates to 1-minute candles via Polars, and always pulls TVL from `PoolHourData` (hourly, forward-filled to 1-minute).
 
-**Audit Gate**: Compares Fast Path vs. Truth Path candles. All windows must pass — ρ > 0.999, MAE < 0.10%, Volume Error < 1%, zero dropped candles. A PASS approves the fast-path OHLCV. A FAIL triggers a full 90-day Truth Path pull.
+**Audit Gate**: Compares Fast Path vs. Truth Path candles. All windows must pass:
+- MAE < 0.10% — price error must be below minimum signal threshold
+- Volume Error < 1% — volume feature accuracy
+- Dropped Candles = 0 — zero-volume ghost candles excluded; only genuine missing swap activity counts
+
+A PASS approves the fast-path OHLCV. A FAIL triggers a full 90-day Truth Path pull.
 
 **Gas Pull** (Alchemy): `baseFeePerGas` sampled every 30 blocks (~1-min resolution) via `eth_getBlockByNumber`. Independent of OHLCV pipeline — can run concurrently.
 
@@ -64,7 +69,7 @@ Alchemy RPC ────► gas.py ───────────────
 | WETH/USDC | `0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59` | CL Slipstream (tick 100) | 0.05% | >0.12% |
 | AERO/WETH | `0x7f670f78b17dec44d5ef68a48740b6f8849cc2e6` | Classic vAMM (x\*y=k) | 0.30% | >0.65% |
 
-**Aerodrome Router:** `0xcF77a3Ba9A5CA399B7c97c74d94E92359DC59`
+**Aerodrome Router (verified on BaseScan):** `0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43`
 
 ### Pool Type Branching (Critical)
 
@@ -90,7 +95,7 @@ Always run schema introspection before writing production Truth Path queries:
 
 ### The Graph Pagination (Critical)
 
-**Always use `id_gt` cursor pagination. Never use `$skip`.** The `skip` parameter has a hard ceiling of 5,000 records and silently truncates high-volume pairs.
+**Always use `id_gt` cursor pagination. Never use `$skip`.** The `skip` parameter has a hard ceiling of 5,000 records and silently truncates high-volume pairs. All three audit windows exceeded 5,000 records — `skip` would have silently failed on every one.
 
 ```python
 last_id = ""
@@ -129,7 +134,7 @@ OHLCV schema: `timestamp (Datetime[us,UTC])`, `open`, `high`, `low`, `close`, `v
 
 ### Execution Path (Production)
 
-Production trades call the Aerodrome Router directly via web3.py. **Coinbase Wallet / UI must not be used** — it routes through 0x + 1inch and adds ~1% service fee per swap, making round-trip costs ~2.1–2.6% (far above minimum signal thresholds).
+Production swaps call the Aerodrome Router directly via web3.py. **Coinbase Wallet / UI must not be used** — it routes through 0x + 1inch and adds ~1% service fee per swap, making round-trip costs ~2.1–2.6% (far above minimum signal thresholds).
 
 ### ML Strategy (Phase 1+)
 
@@ -150,7 +155,7 @@ Production trades call the Aerodrome Router directly via web3.py. **Coinbase Wal
 
 | File | Purpose |
 |---|---|
-| `TRD_v1.4.md` | Authoritative data specification — **do not modify** |
+| `TRD_v1.5.md` | Authoritative data specification — **do not modify** |
 | `ARCHITECTURE.md` | System design and data flow diagrams |
 | `IMPLEMENTATION_GUIDE.md` | Step-by-step code for all pipeline phases |
 | `API_REFERENCE.md` | Verified API endpoints, schemas, and pagination patterns |

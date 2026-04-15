@@ -8,7 +8,7 @@ A high-fidelity historical data pipeline for Base Network DEX pairs. Collects, v
 
 This pipeline implements a **Hybrid Ingestion Workflow**: a fast bulk download path verified against on-chain ground truth before any data is approved for model training. No dataset reaches the training phase without passing a quantitative audit gate.
 
-**Specification:** [TRD v1.4 — Base DEX Data Acquisition Layer](./TRD_v1.4.md)
+**Specification:** [TRD v1.5 — Base DEX Data Acquisition Layer](./TRD_v1.5.md)
 
 ---
 
@@ -47,11 +47,11 @@ httpx       # API requests
 ```bash
 # 1. Clone the repository
 git clone <repo-url>
-cd base-dex-data
+cd cbdex-bot
 
 # 2. Create and activate virtual environment
 python3.12 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
@@ -81,7 +81,7 @@ DexScreener does not provide historical OHLCV data at any resolution. **GeckoTer
 GeckoTerminal provides no historical TVL. The Graph provides TVL at hourly resolution only. The `tvl_usd` column in all final datasets represents **hourly TVL forward-filled to 1-minute buckets**. This is expected behavior.
 
 ### Execution: Aerodrome Router Directly
-Production trades must call the Aerodrome Router (`0xcF77a3Ba9A5CA399B7c97c74d94E92359DC59`) directly via web3.py. Coinbase Wallet adds ~1% service fee per swap on top of pool fees, making round-trip costs ~2.1–2.6% — far exceeding the minimum signal threshold.
+Production swaps must call the Aerodrome Router (`0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43`, verified on BaseScan) directly via web3.py. Coinbase Wallet adds ~1% service fee per swap on top of pool fees, making round-trip costs ~2.1–2.6% — far exceeding the minimum signal threshold.
 
 ### Two Different Schemas
 WETH/USDC (CL pool) and AERO/WETH (Classic vAMM pool) use different on-chain event structures and subgraph schemas. Both must be implemented separately. See [ARCHITECTURE.md](./ARCHITECTURE.md).
@@ -94,7 +94,7 @@ WETH/USDC (CL pool) and AERO/WETH (Classic vAMM pool) use different on-chain eve
 cbdex-bot/
 ├── README.md                       ← You are here
 ├── PROJECT.md                      ← High-level bot overview
-├── TRD_v1.4.md                     ← Authoritative data spec (read-only)
+├── TRD_v1.5.md                     ← Authoritative data spec (read-only)
 ├── ARCHITECTURE.md                 ← System design and data flow
 ├── IMPLEMENTATION_GUIDE.md         ← Step-by-step developer instructions
 ├── API_REFERENCE.md                ← Verified API endpoints and schemas
@@ -132,7 +132,6 @@ cbdex-bot/
 ```bash
 python ingestion/check_subgraph.py
 ```
-Verifies the Aerodrome subgraph is indexed to within 1,000 blocks of the current chain tip.
 
 ### Step 1: Smoke Test (Always run before full pull)
 ```bash
@@ -147,19 +146,19 @@ python ingestion/run_pipeline.py --pair AERO_WETH --days 90
 
 ---
 
-## Audit Thresholds
+## Audit Gate (TRD v1.5)
 
-| Metric | Target |
-|---|---|
-| Price Correlation (ρ) | > 0.999 |
-| MAE | < 0.10% |
-| Volume Error | < 1% |
-| TVL Error | null (no Fast Path TVL — not a gate) |
-| Dropped Candles | 0 |
+Three metrics determine whether GeckoTerminal Fast Path data is approved for ML training:
+
+| Metric | Target | What It Catches |
+|---|---|---|
+| MAE | < 0.10% | Price error vs on-chain ground truth |
+| Volume Error | < 1% | Aggregation methodology differences |
+| Dropped Candles | 0 | Missing swap activity (zero-volume ghost candles excluded) |
 
 ---
 
-## Minimum Signal Thresholds (Production Trading)
+## Minimum Signal Thresholds (Production)
 
 | Pair | Round-Trip Fee | Buffer | Min Signal |
 |---|---|---|---|
@@ -174,7 +173,7 @@ These thresholds assume **direct Aerodrome Router execution**. Coinbase UI adds 
 
 | Document | Purpose |
 |---|---|
-| [TRD v1.4](./TRD_v1.4.md) | Authoritative data specification — do not modify |
+| [TRD v1.5](./TRD_v1.5.md) | Authoritative data specification — do not modify |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | System design and data flow |
 | [IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md) | Developer instructions |
 | [API_REFERENCE.md](./API_REFERENCE.md) | Verified API endpoints and schemas |

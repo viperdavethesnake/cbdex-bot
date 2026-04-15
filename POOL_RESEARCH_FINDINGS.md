@@ -3,7 +3,8 @@
 
 **Research Date:** April 14, 2026  
 **Sources:** GeckoTerminal, DexScreener, BaseScan, Aerodrome Docs, Coinbase Help, Mellow Protocol, CoinLore, CoinMarketCap, 0x Protocol documentation, Coinbase pricing disclosures  
-**Status:** Complete. All critical findings resolved in TRD v1.4.
+**Status:** Complete. All critical findings resolved in TRD v1.5.  
+**Router address corrected 2026-04-14:** Original contained a truncated (invalid) address. Correct address verified on BaseScan.
 
 ---
 
@@ -73,9 +74,9 @@ Coinbase Wallet supports swapping on Aerodrome pools on Base. Aerodrome is expli
 | WETH/USDC | 0.10% | ~2.00% | ~2.10% |
 | AERO/WETH | 0.60% | ~2.00% | ~2.60% |
 
-**Resolution (applied in TRD v1.4):** Production trading must use the Aerodrome Router directly:
+**Resolution (applied in TRD v1.5):** Production trading must use the Aerodrome Router directly:
 ```
-Aerodrome Router: 0xcF77a3Ba9A5CA399B7c97c74d94E92359DC59
+Aerodrome Router (verified on BaseScan): 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43
 Interface: web3.py → Base RPC
 ```
 Coinbase's interface is acceptable for manual observation only.
@@ -138,38 +139,30 @@ Meaningful 1-minute moves >0.6% are **intermittent, not consistent**:
 | USDC/USDbC | Deprecated — USDbC no longer active on Base | — | — | — | — | Not viable |
 
 **Notes:**
-- **cbETH/WETH:** 0.01% fee (0.02% round-trip) makes signal threshold very low, but cbETH ≈ WETH × staking yield — moves are tiny by design. Better for statistical arbitrage, not volatility capture.
+- **cbETH/WETH:** 0.01% fee (0.02% round-trip) makes signal threshold very low, but cbETH ≈ WETH × staking yield — moves are tiny by design.
 - **BRETT/WETH:** High volatility but 1% fee (2% round-trip) requires very large moves to profit.
-- **DEGEN/WETH:** Better liquidity on Uniswap V3 Base (`0xc9034c3e`, ~$915K TVL, ~$443K/day) than Aerodrome. Not viable on Aerodrome.
-- **If AERO/WETH proves unworkable** after smoke test: best substitute is **VIRTUAL/WETH** (`0xc200f21efe67c7f41b81a854c26f9cda80593065`, 0.7% fee, ~$2.66M/day volume).
+- **DEGEN/WETH:** Better liquidity on Uniswap V3 Base (`0xc9034c3e`, ~$915K TVL, ~$443K/day) than Aerodrome.
+- **If AERO/WETH proves unworkable:** best substitute is **VIRTUAL/WETH** (`0xc200f21efe67c7f41b81a854c26f9cda80593065`, 0.7% fee, ~$2.66M/day volume).
 
 ---
 
 ## Critical Findings
 
-### Finding 1 — COINBASE SERVICE FEE (CRITICAL — RESOLVED IN TRD v1.4)
+### Finding 1 — COINBASE SERVICE FEE (CRITICAL — RESOLVED IN TRD v1.5)
 
-Coinbase adds ~1% per swap on top of pool fees. Round-trip cost via Coinbase:
-- WETH/USDC: ~2.10% (vs 0.12% minimum signal threshold)
-- AERO/WETH: ~2.60% (vs 0.65% minimum signal threshold)
+Coinbase adds ~1% per swap on top of pool fees. Round-trip cost via Coinbase: ~2.10% (WETH/USDC) and ~2.60% (AERO/WETH). Production bot uses Aerodrome Router directly. Coinbase UI for manual observation only.
 
-**Resolution:** Production bot uses Aerodrome Router directly via web3.py. Coinbase UI for manual observation only.
+### Finding 2 — MIXED POOL TYPES (RESOLVED IN TRD v1.5)
 
-### Finding 2 — MIXED POOL TYPES (RESOLVED IN TRD v1.4)
-
-WETH/USDC is CL (sqrtPriceX96), AERO/WETH is Classic (reserve ratio). Two different subgraph schemas and aggregation functions required.
-
-**Resolution:** Both schemas documented in ARCHITECTURE.md and IMPLEMENTATION_GUIDE.md. Pool-type-aware branching required throughout Truth Path code.
+WETH/USDC is CL (sqrtPriceX96), AERO/WETH is Classic (reserve ratio). Pool-type-aware branching required throughout Truth Path code.
 
 ### Finding 3 — AERO/WETH VOLUME SPLIT ACROSS TWO POOLS (INFORMATIONAL)
 
-Volume split between Classic vAMM (`0x7f670f78`, ~$110K/day, ~$9.8M TVL) and SlipStream CL200 (`0x82321f3b`, ~$1.17M/day some days, ~$1.5M TVL). Classic vAMM selected for deeper TVL and simpler schema.
-
-**Action:** Validate candle gap rate during 7-day smoke test. If >5% of minutes show gaps, consider adding CL200 pool volume.
+Classic vAMM selected for deeper TVL and simpler schema. If >5% of minutes show gaps during smoke test, consider adding CL200 pool volume.
 
 ### Finding 4 — AERO 90-DAY DRAWDOWN (INFORMATIONAL)
 
-The 90-day training window (Jan–Apr 2026) covers a ~45% AERO decline. Training data heavily weighted toward bear-market conditions. Model may not generalize to bull or sideways regimes. Flag in model specification.
+Training data (Jan–Apr 2026) covers ~45% AERO decline. Model may not generalize to bull regimes. Flag in model specification.
 
 ---
 
@@ -182,4 +175,4 @@ The 90-day training window (Jan–Apr 2026) covers a ~45% AERO decline. Training
 
 ---
 
-*Data freshness note: TVL and 24h volume figures are point-in-time snapshots from April 14, 2026. Verify current values against aerodrome.finance/liquidity before implementation.*
+*Data freshness note: TVL and 24h volume figures are point-in-time snapshots from April 14, 2026.*

@@ -69,7 +69,7 @@ Both schemas must be implemented separately. A single unified query will not wor
 
 **Production execution must use the Aerodrome Router directly:**
 ```
-Aerodrome Router: 0xcF77a3Ba9A5CA399B7c97c74d94E92359DC59
+Aerodrome Router (verified on BaseScan): 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43
 Interface: web3.py → Base RPC
 ```
 
@@ -138,7 +138,7 @@ Compare the returned block number against the current Base chain head. If the de
 
 ### Step 1: Bulk Ingestion (Fast Path)
 
-**Source: GeckoTerminal only.**
+**Source: GeckoTerminal only.** DexScreener does not provide historical OHLCV at any resolution.
 
 **Endpoint:**
 ```
@@ -173,8 +173,6 @@ For the three selected windows, pull raw `Swap` events via The Graph (GraphQL). 
 
 The audit answers one question: **is the GeckoTerminal data accurate enough that signals generated from it would match signals generated from on-chain ground truth?**
 
-The three metrics that answer this for a DEX trading bot:
-
 | Metric | Target | Definition | Why It Matters |
 |---|---|---|---|
 | **MAE** | < 0.10% | Mean Absolute Error of Close prices | If price error exceeds the minimum signal threshold, the model learns wrong signals |
@@ -183,7 +181,7 @@ The three metrics that answer this for a DEX trading bot:
 | **TVL Error** | null | No Fast Path TVL — not a fail condition | Always null; TVL sourced from Truth Path regardless |
 | **Filled Candles** | Info Only | Empty windows forward-filled by Fast Path | Logged, not gated |
 
-**Removed from v1.4:** Pearson correlation (ρ > 0.999). This metric is inappropriate for DEX data validation because it fails mechanically on low-variance trading days when a systematic but small price-construction methodology difference exists between GeckoTerminal's TWAP-style pricing and on-chain last-swap prices. The failure does not indicate the data is unusable — it indicates the metric was wrong for this context. MAE captures actual price accuracy for trading purposes.
+**Not included:** Pearson correlation was removed in v1.5. It is a securities-market statistical tool that fails mechanically on low-variance DEX trading days due to systematic price-construction methodology differences between GeckoTerminal (TWAP-style) and on-chain last-swap prices. It adds no diagnostic value for DEX signal generation — MAE captures actual price accuracy.
 
 ---
 
@@ -204,14 +202,32 @@ The three metrics that answer this for a DEX trading bot:
       "regime": "spike",
       "date": "2026-01-31",
       "mae_pct": 0.089,
-      "volume_error_pct": 0.249,
+      "volume_error_pct": 0.253,
       "tvl_error_pct": null,
       "gap_count_dropped": 0,
       "gap_count_filled": 2,
       "pass": true
     },
-    { "regime": "flat", "...": "..." },
-    { "regime": "mean", "...": "..." }
+    {
+      "regime": "flat",
+      "date": "2026-01-24",
+      "mae_pct": 0.035,
+      "volume_error_pct": 0.040,
+      "tvl_error_pct": null,
+      "gap_count_dropped": 0,
+      "gap_count_filled": 19,
+      "pass": true
+    },
+    {
+      "regime": "mean",
+      "date": "2026-03-13",
+      "mae_pct": 0.054,
+      "volume_error_pct": 0.295,
+      "tvl_error_pct": null,
+      "gap_count_dropped": 0,
+      "gap_count_filled": 37,
+      "pass": true
+    }
   ],
   "overall_verdict": "PASS"
 }
@@ -222,10 +238,10 @@ The three metrics that answer this for a DEX trading bot:
 | Column | Type | Description |
 |---|---|---|
 | `timestamp` | `Datetime[us, UTC]` | 1-minute bucket start |
-| `open` | `Float64` | First trade price in bucket |
-| `high` | `Float64` | Highest trade price in bucket |
-| `low` | `Float64` | Lowest trade price in bucket |
-| `close` | `Float64` | Last trade price in bucket |
+| `open` | `Float64` | First swap price in bucket |
+| `high` | `Float64` | Highest swap price in bucket |
+| `low` | `Float64` | Lowest swap price in bucket |
+| `close` | `Float64` | Last swap price in bucket |
 | `volume_usd` | `Float64` | Σ(Amount_token × Price_swap) in USD |
 | `tvl_usd` | `Float64` | Hourly TVL forward-filled to 1-minute buckets |
 
@@ -233,7 +249,7 @@ The three metrics that answer this for a DEX trading bot:
 
 ## 8. Fallback Protocol
 
-If `overall_verdict: FAIL` on MAE, Volume Error, or Dropped Candles: abandon GeckoTerminal, execute full 90-day Truth Path pull via The Graph. Expect 1,000+ paginated queries. Budget 8–20 hours.
+If `overall_verdict: FAIL` on MAE, Volume Error, or Dropped Candles: abandon GeckoTerminal, execute full 90-day Truth Path pull via The Graph. Expect 1,000+ paginated queries. Budget 8–20 hours. All queries must use `id_gt` cursor pagination.
 
 ---
 
@@ -246,7 +262,7 @@ If `overall_verdict: FAIL` on MAE, Volume Error, or Dropped Candles: abandon Gec
 - [ ] Truth Path raw swaps pulled for 3 windows (id_gt pagination)
 - [ ] TVL pulled from `PoolHourData`, forward-filled to 1-minute
 - [ ] Raw swaps aggregated to 1m candles via Polars (pool-type-aware)
-- [ ] Audit Report JSON generated, all thresholds met, archived
+- [ ] Audit Report JSON generated (trd_version: v1.5), all thresholds met, archived
 - [ ] 90-day Gas series pulled, null-checked, stored
 - [ ] Final dataset stored as `final_90d.parquet` with TVL populated
 
