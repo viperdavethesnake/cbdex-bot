@@ -52,16 +52,33 @@ FINAL_PATH     = "data/base_mainnet/pairs/AERO_WETH/final_90d.parquet"
 
 # ── RPC helpers ────────────────────────────────────────────────────────────────
 
-def rpc_call(method: str, params: list):
-    resp = httpx.post(
-        PUBLIC_RPC,
-        json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
-        timeout=30,
-    )
-    r = resp.json()
-    if "error" in r:
-        raise RuntimeError(f"RPC error [{method}]: {r['error']}")
-    return r["result"]
+def rpc_call(method: str, params: list, _retries: int = 5):
+    for attempt in range(_retries):
+        try:
+            resp = httpx.post(
+                PUBLIC_RPC,
+                json={"jsonrpc": "2.0", "method": method, "params": params, "id": 1},
+                timeout=30,
+            )
+            r = resp.json()
+            if "error" in r:
+                code = r["error"].get("code", 0)
+                # -32011 = no healthy backend; retry with backoff
+                if attempt < _retries - 1 and code == -32011:
+                    wait = 10 * (attempt + 1)
+                    print(f"  RPC backend unhealthy, retrying in {wait}s...", flush=True)
+                    time.sleep(wait)
+                    continue
+                raise RuntimeError(f"RPC error [{method}]: {r['error']}")
+            return r["result"]
+        except httpx.TransportError:          # ConnectTimeout, ConnectError, ReadTimeout, etc.
+            if attempt < _retries - 1:
+                wait = 5 * (attempt + 1)
+                print(f"  Network error, retrying in {wait}s...", flush=True)
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"RPC [{method}] failed after {_retries} attempts")
 
 
 def fetch_logs(from_block: int, to_block: int, topic: str, label: str = "") -> list[dict]:
@@ -136,13 +153,18 @@ def decode_swap_logs(logs: list[dict]) -> list[dict]:
     """
     Decode Aerodrome Classic vAMM Swap event data.
 
-    Swap data layout (4 × uint256 = 128 bytes = 256 hex chars):
-      [0:64]    amount0In  — AERO in  (18 dec)
-      [64:128]  amount1In  — WETH in  (18 dec)
-      [128:192] amount0Out — AERO out (18 dec)
-      [192:256] amount1Out — WETH out (18 dec)
+    Pool token ordering (verified via token0()/token1() RPC calls):
+      token0 = WETH (0x4200...0006, 18 dec)
+      token1 = AERO (0x9401...8631, 18 dec)
 
-    Price in WETH per AERO (both tokens 18 dec — no decimal scaling needed).
+    Swap data layout (4 × uint256 = 128 bytes = 256 hex chars):
+      [0:64]    amount0In  — WETH in  (18 dec)
+      [64:128]  amount1In  — AERO in  (18 dec)
+      [128:192] amount0Out — WETH out (18 dec)
+      [192:256] amount1Out — AERO out (18 dec)
+
+    price_weth_per_aero: how much WETH one AERO costs (execution price).
+    Multiply by weth_usdc_close_price in aggregate_classic_swaps to get USD/AERO.
     """
     records = []
     for log in logs:
@@ -150,23 +172,23 @@ def decode_swap_logs(logs: list[dict]) -> list[dict]:
         if len(hex_data) != 256:            # sanity check: 4 × 32 bytes
             continue
 
-        a0in  = int(hex_data[0:64],   16)   # AERO in
-        a1in  = int(hex_data[64:128], 16)   # WETH in
-        a0out = int(hex_data[128:192], 16)  # AERO out
-        a1out = int(hex_data[192:256], 16)  # WETH out
+        a0in  = int(hex_data[0:64],   16)   # WETH in
+        a1in  = int(hex_data[64:128], 16)   # AERO in
+        a0out = int(hex_data[128:192], 16)  # WETH out
+        a1out = int(hex_data[192:256], 16)  # AERO out
 
-        if a0out > 0 and a1in > 0:          # WETH → AERO (buying AERO)
-            price    = a1in  / a0out
-            weth_raw = float(a1in)
-        elif a0in > 0 and a1out > 0:        # AERO → WETH (selling AERO)
-            price    = a1out / a0in
-            weth_raw = float(a1out)
+        if a0in > 0 and a1out > 0:          # WETH → AERO (buying AERO)
+            price    = a0in  / a1out        # WETH per AERO
+            weth_raw = float(a0in)
+        elif a0out > 0 and a1in > 0:        # AERO → WETH (selling AERO)
+            price    = a0out / a1in         # WETH per AERO
+            weth_raw = float(a0out)
         else:
             continue                        # zero-amount event — skip
 
         records.append({
             "block_number": int(log["blockNumber"], 16),
-            "price":        price,
+            "price_weth":   price,          # WETH per AERO (raw, not yet USD)
             "weth_raw":     weth_raw,       # raw WETH amount in wei (18 dec)
         })
     return records
@@ -210,7 +232,9 @@ def aggregate_classic_swaps(
         .sort("timestamp")
     )
 
-    # Join_asof with WETH/USDC close price for volume_usd computation
+    # Join_asof with WETH/USDC close price for:
+    #   1. USD price: price_usd = price_weth_per_aero × weth_price (matches GeckoTerminal currency=usd)
+    #   2. volume_usd: weth_amount × weth_price
     weth_price_df = (
         weth_usdc
         .select(["timestamp", "close"])
@@ -220,9 +244,10 @@ def aggregate_classic_swaps(
     swaps_df = (
         swaps_df
         .join_asof(weth_price_df, on="timestamp", strategy="backward")
-        .with_columns(
-            (pl.col("weth_amount") * pl.col("weth_price")).alias("volume_usd")
-        )
+        .with_columns([
+            (pl.col("price_weth") * pl.col("weth_price")).alias("price"),   # USD per AERO
+            (pl.col("weth_amount") * pl.col("weth_price")).alias("volume_usd"),
+        ])
     )
 
     return (
@@ -382,16 +407,18 @@ def phase7(candidate: pl.DataFrame, gas_df: pl.DataFrame, weth_usdc: pl.DataFram
     print(f"  Sync events total: {len(sync_logs):,}")
 
     # Decode Sync events (data = 2 × uint256 = 64 bytes = 128 hex chars)
+    # reserve0 = WETH (token0), reserve1 = AERO (token1)
+    # TVL = 2 × reserve0_weth × weth_price (vAMM symmetry — use WETH side directly)
     records = []
     for log in sync_logs:
         hex_data = log["data"][2:]
         if len(hex_data) != 128:
             continue
-        reserve0 = int(hex_data[0:64],  16)   # AERO reserves (not used)
-        reserve1 = int(hex_data[64:128], 16)   # WETH reserves
+        reserve0 = int(hex_data[0:64],  16)   # WETH reserves
+        # reserve1 = AERO (not used — using WETH side for TVL)
         records.append({
             "block_number": int(log["blockNumber"], 16),
-            "reserve1_raw": float(reserve1),
+            "reserve0_raw": float(reserve0),   # WETH in wei
         })
 
     if not records:
@@ -417,17 +444,17 @@ def phase7(candidate: pl.DataFrame, gas_df: pl.DataFrame, weth_usdc: pl.DataFram
         .sort("timestamp")
     )
 
-    # Last Sync per hour → TVL = 2 × reserve1_weth × weth_price
+    # Last Sync per hour → TVL = 2 × reserve0_weth × weth_price
     tvl_hourly = (
         sync_with_ts
         .with_columns(pl.col("timestamp").dt.truncate("1h").alias("hour"))
         .group_by("hour")
-        .agg(pl.col("reserve1_raw").last())
+        .agg(pl.col("reserve0_raw").last())
         .rename({"hour": "timestamp"})
         .sort("timestamp")
         .join(weth_hourly, on="timestamp", how="left")
         .with_columns(
-            (2.0 * pl.col("reserve1_raw") / 1e18 * pl.col("weth_price")).alias("tvl_usd")
+            (2.0 * pl.col("reserve0_raw") / 1e18 * pl.col("weth_price")).alias("tvl_usd")
         )
         .select(["timestamp", "tvl_usd"])
     )
