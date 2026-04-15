@@ -8,14 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Current phase:** Phase 1 — Data ingestion pipeline (TRD v1.4).
 
-## Environment Setup
+## Environment
 
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install polars httpx web3 python-dotenv scipy scikit-learn
-pip freeze > requirements.txt
-```
+**Python:** 3.13 (system default — `python3.13` or `python3`). Python 3.12 is not installed.
+**Venv:** `.venv/` — activate with `source .venv/bin/activate`.
+**Packages:** Do not `pip install` anything without explicit user approval. Use what is already in the venv.
 
 ```bash
 # .env (copy from .env.example)
