@@ -1,8 +1,9 @@
 # SPECIFICATION: Base DEX Data Acquisition Layer (v1.5)
 
 **Status:** Active — supersedes v1.4  
-**Updated:** 2026-04-14  
-**Changes from v1.4:** Removed Pearson correlation from audit gate. Pearson correlation is a traditional securities market metric inappropriate for DEX on-chain data validation — it fails mechanically on low-variance days due to systematic price-construction methodology differences between GeckoTerminal (TWAP-style) and on-chain last-swap prices, even when the data is accurate and usable. The three metrics that matter for DEX signal generation are MAE, Volume Error, and Dropped Candles — all of which passed. Audit gate updated accordingly.
+**Updated:** 2026-04-15  
+**Changes from v1.4:** Removed Pearson correlation from audit gate. Pearson correlation is a traditional securities market metric inappropriate for DEX on-chain data validation — it fails mechanically on low-variance days due to systematic price-construction methodology differences between GeckoTerminal (TWAP-style) and on-chain last-swap prices, even when the data is accurate and usable. The three metrics that matter for DEX signal generation are MAE, Volume Error, and Dropped Candles — all of which passed. Audit gate updated accordingly.  
+**Changes within v1.5 (2026-04-15):** Dropped Candle definition updated to exclude zero-volume on-chain ghost candles (dust transactions, internal contract calls with amountUSD = 0). GeckoTerminal correctly suppresses these and their absence is not a data quality failure.
 
 ---
 
@@ -178,7 +179,7 @@ The three metrics that answer this for a DEX trading bot:
 |---|---|---|---|
 | **MAE** | < 0.10% | Mean Absolute Error of Close prices | If price error exceeds the minimum signal threshold, the model learns wrong signals |
 | **Volume Error** | < 1% | `\|Vol_fast - Vol_truth\| / Vol_truth` | Volume is a key ML feature — systematic error corrupts feature magnitude |
-| **Dropped Candles** | 0 | Minutes where Truth has activity but Fast Path is empty | Missing candles create time series gaps that break model training |
+| **Dropped Candles** | 0 | Minutes where Truth has activity with volume_usd ≥ $0.01 but Fast Path is empty. Zero-volume candles (dust transactions, internal contract calls with amountUSD = 0 or floating-point near-zero ~1e-14) are excluded from this count — GeckoTerminal correctly suppresses sub-cent candles and their absence is not a data quality failure. | Missing candles create time series gaps that break model training |
 | **TVL Error** | null | No Fast Path TVL — not a fail condition | Always null; TVL sourced from Truth Path regardless |
 | **Filled Candles** | Info Only | Empty windows forward-filled by Fast Path | Logged, not gated |
 
