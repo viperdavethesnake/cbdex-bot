@@ -36,28 +36,27 @@ log = logging.getLogger(__name__)
 
 NETWORK_CONFIG = {
     "mainnet": {
-        "rpc_url":        os.environ.get("BASE_RPC_URL", ""),
-        "chain_id":       8453,
-        "router":         "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
-        "explorer":       "https://basescan.org/tx/",
+        "rpc_url":   os.environ.get("BASE_RPC_URL", ""),
+        "chain_id":  8453,
+        "router":    "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43",
+        "explorer":  "https://basescan.org/tx/",
     },
     "sepolia": {
-        "rpc_url":        os.environ.get("BASE_SEPOLIA_RPC_URL", ""),
-        "chain_id":       84532,
-        "router":         os.environ.get("SEPOLIA_ROUTER_ADDRESS", ""),
-        "explorer":       "https://sepolia.basescan.org/tx/",
+        "rpc_url":   os.environ.get("BASE_SEPOLIA_RPC_URL", ""),
+        "chain_id":  84532,
+        "router":    os.environ.get("SEPOLIA_ROUTER_ADDRESS", ""),
+        "explorer":  "https://sepolia.basescan.org/tx/",
     },
 }
 
 # ── Safety limits ──────────────────────────────────────────────────────────────
 
-GAS_CEILING_GWEI  = 1.0    # halt if baseFee > 1 Gwei (10× Base L2 median)
-SLIPPAGE_CAP_PCT  = 0.005  # 0.5% max slippage on minAmountOut
-DEADLINE_SECONDS  = 60     # tx deadline: now + 60s
-MAX_RETRIES       = 2      # retry failed tx once before giving up
+GAS_CEILING_GWEI = 1.0    # halt if baseFee > 1 Gwei (10× Base L2 median)
+SLIPPAGE_CAP_PCT = 0.005  # 0.5% max slippage on minAmountOut
+DEADLINE_SECONDS = 60     # tx deadline: now + 60s
 
 # ── Aerodrome Router ABI (minimal — swapExactTokensForTokens only) ─────────────
-# Full ABI at: https://basescan.org/address/0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43
+# Full ABI: https://basescan.org/address/0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43
 
 ROUTER_ABI = [
     {
@@ -120,8 +119,8 @@ ERC20_ABI = [
 class SwapResult:
     success:       bool
     tx_hash:       str | None
-    amount_in:     int      # wei
-    amount_out:    int      # wei (actual)
+    amount_in:     int       # wei
+    amount_out:    int       # wei (actual)
     gas_used:      int
     gas_price_wei: int
     gas_cost_eth:  float
@@ -130,7 +129,7 @@ class SwapResult:
 
 
 class KillSwitch(Exception):
-    """Raised when the kill switch file is present or daily loss limit is hit."""
+    """Raised when the kill switch file is present."""
 
 
 class GasCeilingExceeded(Exception):
@@ -156,8 +155,8 @@ class AerodromeRouter:
     ):
         self.network = network
         cfg = NETWORK_CONFIG[network]
-        self.chain_id   = cfg["chain_id"]
-        self.explorer   = cfg["explorer"]
+        self.chain_id    = cfg["chain_id"]
+        self.explorer    = cfg["explorer"]
         self.router_addr = Web3.to_checksum_address(cfg["router"])
 
         self.w3 = Web3(Web3.HTTPProvider(cfg["rpc_url"]))
@@ -175,7 +174,7 @@ class AerodromeRouter:
 
         self.router = self.w3.eth.contract(
             address=self.router_addr,
-            abi=Router_ABI if False else ROUTER_ABI,
+            abi=ROUTER_ABI,
         )
 
         log.info(f"AerodromeRouter ready  network={network}  wallet={self.wallet}")
@@ -198,8 +197,10 @@ class AerodromeRouter:
             )
         return base_fee
 
-    def get_quote(self, token_in: str, token_out: str, amount_in: int, stable: bool = False) -> int:
-        """Get expected output amount from Aerodrome Router (no state change)."""
+    def get_quote(
+        self, token_in: str, token_out: str, amount_in: int, stable: bool = False
+    ) -> int:
+        """Get expected output amount from Aerodrome Router (read-only)."""
         route = [{
             "from":    Web3.to_checksum_address(token_in),
             "to":      Web3.to_checksum_address(token_out),
@@ -230,7 +231,7 @@ class AerodromeRouter:
             "nonce":   nonce,
             "gas":     100_000,
         })
-        signed = self.account.sign_transaction(approve_tx)
+        signed  = self.account.sign_transaction(approve_tx)
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=60)
         if receipt["status"] != 1:
@@ -241,11 +242,11 @@ class AerodromeRouter:
 
     def swap(
         self,
-        token_in:  str,
-        token_out: str,
-        amount_in: int,
+        token_in:       str,
+        token_out:      str,
+        amount_in:      int,
         min_amount_out: int,
-        stable: bool = False,
+        stable:         bool = False,
     ) -> SwapResult:
         """
         Execute a swap via the Aerodrome Router.
@@ -273,7 +274,7 @@ class AerodromeRouter:
         }]
 
         deadline = int(time.time()) + DEADLINE_SECONDS
-        nonce = self.w3.eth.get_transaction_count(self.wallet)
+        nonce    = self.w3.eth.get_transaction_count(self.wallet)
 
         tx = self.router.functions.swapExactTokensForTokens(
             amount_in,
@@ -282,11 +283,11 @@ class AerodromeRouter:
             self.wallet,
             deadline,
         ).build_transaction({
-            "chainId": self.chain_id,
-            "from":    self.wallet,
-            "nonce":   nonce,
-            "gas":     300_000,
-            "maxFeePerGas":         base_fee * 2,
+            "chainId":             self.chain_id,
+            "from":                self.wallet,
+            "nonce":               nonce,
+            "gas":                 300_000,
+            "maxFeePerGas":        base_fee * 2,
             "maxPriorityFeePerGas": base_fee // 10,
         })
 
@@ -296,19 +297,21 @@ class AerodromeRouter:
 
         receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=90)
 
+        gas_cost = receipt["gasUsed"] * base_fee / 1e18
+
         if receipt["status"] != 1:
             return SwapResult(
-                success=False, tx_hash=tx_hash.hex(),
-                amount_in=amount_in, amount_out=0,
+                success=False,
+                tx_hash=tx_hash.hex(),
+                amount_in=amount_in,
+                amount_out=0,
                 gas_used=receipt["gasUsed"],
                 gas_price_wei=base_fee,
-                gas_cost_eth=receipt["gasUsed"] * base_fee / 1e18,
+                gas_cost_eth=gas_cost,
                 error="Transaction reverted",
                 explorer_url=self.explorer + tx_hash.hex(),
             )
 
-        # Parse actual amounts from logs (last Transfer event = amount_out)
-        gas_cost = receipt["gasUsed"] * base_fee / 1e18
         log.info(
             f"Swap confirmed  gas={receipt['gasUsed']}  "
             f"cost={gas_cost:.8f} ETH  block={receipt['blockNumber']}"
@@ -318,7 +321,7 @@ class AerodromeRouter:
             success=True,
             tx_hash=tx_hash.hex(),
             amount_in=amount_in,
-            amount_out=0,  # populated by caller from quote or event log
+            amount_out=0,   # caller reads from quote or Transfer event
             gas_used=receipt["gasUsed"],
             gas_price_wei=base_fee,
             gas_cost_eth=gas_cost,
