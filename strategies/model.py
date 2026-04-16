@@ -106,6 +106,26 @@ def _tune_threshold(
     return best_threshold, grid_results
 
 
+def _f1_macro(val_pred: pl.DataFrame) -> float:
+    """
+    Macro-averaged F1 over LONG (1) and SHORT (-1) classes on the val set.
+    HOLD (0) is excluded — it is not a tradeable signal, and its high frequency
+    would inflate F1 unrealistically.
+    Returns 0.0 when no LONG or SHORT predictions were made.
+    """
+    rows = val_pred.select(["label", "pred"]).to_dicts()
+    f1s = []
+    for cls in [1, -1]:
+        tp = sum(1 for r in rows if r["pred"] == cls and r["label"] == cls)
+        fp = sum(1 for r in rows if r["pred"] == cls and r["label"] != cls)
+        fn = sum(1 for r in rows if r["pred"] != cls and r["label"] == cls)
+        prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        rec  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1   = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+        f1s.append(f1)
+    return sum(f1s) / len(f1s)
+
+
 def _print_confusion(val_pred: pl.DataFrame, fold: int) -> None:
     """Print predicted vs actual confusion matrix (LONG/HOLD/SHORT)."""
     labels = [-1, 0, 1]
@@ -219,11 +239,15 @@ def run_model(
         baseline_val = _predict_baseline(val_df, hurdle)
         baseline_result = sim.run(baseline_val)
 
+        # F1 macro: average of F1 per active class (LONG, SHORT) on val set
+        f1_macro = _f1_macro(val_pred)
+
         if verbose:
             print_summary(result, label=f"Fold {fold+1} RF")
             print_summary(baseline_result, label=f"Fold {fold+1} baseline")
             beat = "✓ RF beats baseline" if result.pnl_net_usd > baseline_result.pnl_net_usd else "✗ RF loses to baseline"
             print(f"    {beat}  (RF ${result.pnl_net_usd:+.2f} vs baseline ${baseline_result.pnl_net_usd:+.2f})")
+            print(f"    F1 macro: {f1_macro:.3f}  Sharpe: {result.sharpe_ratio:+.2f}")
             print(f"    Top features: {top5}")
             _print_confusion(val_pred, fold + 1)
             if fold == 1:   # fold 2 only — threshold grid
@@ -240,15 +264,19 @@ def run_model(
         s["top_features"]     = top5
         s["baseline_pnl_net"] = round(baseline_result.pnl_net_usd, 4)
         s["beats_baseline"]   = result.pnl_net_usd > baseline_result.pnl_net_usd
+        s["f1_macro"]         = round(f1_macro, 4)
         fold_results.append(s)
 
     if verbose and fold_results:
-        avg_net = sum(r["pnl_net_usd"] for r in fold_results) / len(fold_results)
-        avg_prec = sum(r["precision"] for r in fold_results) / len(fold_results)
-        avg_roi  = sum(r["roi_annualised_pct"] for r in fold_results) / len(fold_results)
+        avg_net    = sum(r["pnl_net_usd"]        for r in fold_results) / len(fold_results)
+        avg_prec   = sum(r["precision"]           for r in fold_results) / len(fold_results)
+        avg_roi    = sum(r["roi_annualised_pct"]  for r in fold_results) / len(fold_results)
+        avg_f1     = sum(r["f1_macro"]            for r in fold_results) / len(fold_results)
+        avg_sharpe = sum(r["sharpe_ratio"]        for r in fold_results) / len(fold_results)
         print(f"\n  {'='*50}")
         print(f"  {pair} Average across {len(fold_results)} folds:")
-        print(f"    Net PnL: ${avg_net:+.2f}  Precision: {avg_prec:.3f}  Ann. ROI: {avg_roi:+.1f}%")
+        print(f"    Net PnL: ${avg_net:+.2f}  Precision: {avg_prec:.3f}  "
+              f"F1: {avg_f1:.3f}  Sharpe: {avg_sharpe:+.2f}  Ann. ROI: {avg_roi:+.1f}%")
 
     return fold_results
 

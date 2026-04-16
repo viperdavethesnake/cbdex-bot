@@ -22,6 +22,8 @@ Usage:
     results = sim.run(predictions_df)
 """
 
+import math
+import statistics
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -109,6 +111,22 @@ class SimulationResult:
         """Annualised ROI assuming results cover ~90 days."""
         return self.pnl_net_pct * (365 / 90)
 
+    @property
+    def sharpe_ratio(self) -> float:
+        """
+        Per-trade Sharpe: mean(pnl_net) / std(pnl_net) * sqrt(trades_per_year).
+        Uses 7-day fold → ~365/7 ≈ 52 folds/year as the annualisation factor.
+        Returns 0.0 when fewer than 2 trades exist.
+        """
+        if len(self.trades) < 2:
+            return 0.0
+        rets = [t.pnl_net_usd for t in self.trades]
+        mu   = statistics.mean(rets)
+        sig  = statistics.stdev(rets)
+        if sig == 0:
+            return 0.0
+        return (mu / sig) * math.sqrt(52)
+
     def summary(self) -> dict:
         return {
             "pair":               self.pair,
@@ -124,6 +142,7 @@ class SimulationResult:
             "pnl_net_usd":        round(self.pnl_net_usd, 4),
             "pnl_net_pct":        round(self.pnl_net_pct, 4),
             "roi_annualised_pct": round(self.roi_annualised_pct, 2),
+            "sharpe_ratio":       round(self.sharpe_ratio, 3),
             "capital_usd":        self.capital_usd,
             "position_usd":       self.position_usd,
         }

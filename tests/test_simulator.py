@@ -139,7 +139,8 @@ class TestSimulatorPnLMath(unittest.TestCase):
         for key in ("pair", "n_candles", "n_trades", "precision",
                     "pnl_gross_usd", "total_fee_usd", "total_gas_usd",
                     "total_slippage_usd", "total_latency_usd",
-                    "pnl_net_usd", "pnl_net_pct", "roi_annualised_pct"):
+                    "pnl_net_usd", "pnl_net_pct", "roi_annualised_pct",
+                    "sharpe_ratio"):
             self.assertIn(key, s, f"Missing key: {key}")
 
 
