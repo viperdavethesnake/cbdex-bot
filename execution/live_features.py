@@ -49,7 +49,7 @@ class LiveFeaturePipeline:
         pool:    str = POOL_AERO_WETH,
         rpc_url: str | None = None,
     ):
-        self.pool    = pool
+        self.pool    = Web3.to_checksum_address(pool)
         self.rpc_url = rpc_url or os.environ["BASE_RPC_URL"]
         self.w3      = Web3(Web3.HTTPProvider(self.rpc_url))
         self.client  = httpx.Client(timeout=15)
