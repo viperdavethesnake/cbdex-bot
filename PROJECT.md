@@ -74,14 +74,20 @@ project/
 
 ### Phase 2 — ML Model + Paper Trading 🟢
 - [x] **Feature Engineering:** 21-feature set — momentum, volatility, relative volume, range position, TVL, gas, time, gap features.
-- [x] **Backtest Engine:** Gas-aware + slippage-aware event-driven simulator (`backtest/simulator.py`).
-- [x] **ML Training:** Walk-forward RF on AERO/WETH — precision 0.600, ann. ROI +5.8% after costs.
+- [x] **Backtest Engine:** Gas-aware + slippage-aware + latency-aware simulator (`backtest/simulator.py`); latency_bps=10 each way.
+- [x] **ML Training:** Walk-forward RF on AERO/WETH — precision 0.600, F1-macro reported, per-trade Sharpe reported, ann. ROI +5.8% after costs. Regime filter applied per-fold (no leakage). Baseline comparison per fold.
+- [x] **Model Save:** `train_final_model()` trains on most recent 60 days and saves `models/aero_weth_rf.pkl`.
 - [x] **WETH/USDC ML:** Precision 0.238 at 1-min — not viable. Shelved for 5/15-min future investigation.
 - [x] **Paper Trading:** `execution/paper_trader.py` running live on mainnet data (no real funds).
   - 1-bar hold strategy, regime filter (vol_15 ≥ 0.0098), signal threshold 0.70
   - JSONL logging: signal events + close events with realized PnL
-  - Kill switch (`.kill` file), daily loss limit ($50), stale data gate
-- [ ] **Validation:** Accumulate 1–2 weeks of paper trade data before live deployment.
+  - Kill switch (`.kill` file), daily loss limit ($50), stale data gate (blocks signals when data > 5 min old)
+  - Heartbeat file written every tick (`logs/heartbeat`)
+  - Data freshness check at startup (warns if parquet > 14 days old)
+- [x] **Data Refresh Pipeline:** `scripts/refresh_data_and_model.py` — weekly gas + WETH/USDC + AERO/WETH pull + retrain. Systemd timer in `infra/` (not yet installed).
+- [x] **Test Suite:** 23 unit tests (`tests/test_simulator.py`, `tests/test_live_features.py`) — zero external deps, all passing.
+- [x] **Infrastructure:** systemd service files in `infra/` (not yet installed).
+- [ ] **Validation:** Accumulate 1–2 weeks of paper trade data before live deployment (~2026-04-23).
 
 ### Phase 3 — Live Trading
 - [ ] **Wallet Funding:** Fund a dedicated "Hot Wallet" with a strict capital cap.

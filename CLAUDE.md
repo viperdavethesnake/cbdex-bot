@@ -106,10 +106,13 @@ Direct Aerodrome Router via web3.py. **Coinbase UI must not be used** — ~1% se
 ## ML Strategy (Phase 2)
 
 - **Label:** Log return `ln(P_t+1 / P_t)` at t+1
-- **Features:** 1-min OHLCV, pool TVL, gas price, relative volume
-- **Training:** Walk-forward — 60-day train → 7-day validate → slide
-- **AERO/WETH regime filter:** Execute only when realized 1-min volatility > 1.5× fee hurdle (~0.98%/min). Active ~25% of minutes.
+- **Features:** 21 features — 1-min OHLCV, pool TVL, gas price, relative volume, time, gap
+- **Training:** Walk-forward — 60-day train → 7-day validate → 4 folds
+- **Evaluation metrics:** precision, F1-macro (LONG/SHORT only), per-trade Sharpe (annualised at 52 folds/year)
+- **Backtest cost model:** pool fee (round-trip) + gas $0.02 + slippage + latency 10bps each way
+- **AERO/WETH regime filter:** vol_15 ≥ 0.0098 (applied per fold after split — no leakage)
 - **Model saved:** `models/aero_weth_rf.pkl` — Random Forest, threshold 0.70, precision 0.600, ann. ROI +5.8%
+- **Retrain:** `strategies/model.py train_final_model()` trains on most recent 60 days and saves pkl
 - **WETH/USDC:** Not viable at 1-min resolution (precision 0.238). Shelved for future 5/15-min investigation.
 
 ## Paper Trading (Phase 2 — Active)
@@ -141,6 +144,37 @@ PYTHONPATH=. python3 execution/paper_trader.py >> logs/paper_trader.log 2>&1 &
 - `candle_ts` returned in feature dict — paper trader uses it to guard against $0 closes on frozen candles
 
 **Known limitation:** `tvl_norm` is always 1.0 in live inference because TVL is set as a scalar constant across the 65-candle window (rolling_mean of a constant = the constant). Real fix requires fetching a 60-candle historical TVL series via eth_getLogs. Low priority for paper trading phase.
+
+## Data Refresh
+
+Training data expires after 90 days. Refresh weekly with:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=. python3 scripts/refresh_data_and_model.py
+# Flags: --skip-gas  --skip-weth  --eval-only
+```
+
+Steps: gas pull (~110 min) → WETH/USDC via GeckoTerminal (~10 min) → AERO/WETH via eth_getLogs (~45 min) → walk-forward eval → save model pkl. Logs to `logs/refresh.log`.
+
+Systemd timer (`infra/cbdex-refresh.service` + `cbdex-refresh.timer`) is in the repo but **not installed** — run manually for now.
+
+## Tests
+
+```bash
+PYTHONPATH=. python3 -m unittest tests.test_simulator tests.test_live_features -v
+```
+
+- `tests/test_simulator.py` — 13 unit tests: LONG/SHORT PnL math, fees, gas, latency, precision, summary keys
+- `tests/test_live_features.py` — 10 unit tests: feature column parity with `FEATURE_COLS_AERO`, tvl_norm fallback, ret_1 correctness (API calls mocked)
+
+## Infrastructure
+
+`infra/cbdex-paper-trader.service` and `infra/cbdex-refresh.timer` are committed but **not installed**. Install with:
+```bash
+sudo cp infra/*.service infra/*.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now cbdex-paper-trader cbdex-refresh.timer
+```
 
 ## Rate Limits
 
