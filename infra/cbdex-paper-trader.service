@@ -1,0 +1,18 @@
+[Unit]
+Description=cbdex AERO/WETH Paper Trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=david
+WorkingDirectory=/space/docker/containers/cbdex-bot
+Environment="PYTHONPATH=/space/docker/containers/cbdex-bot"
+ExecStart=/space/docker/containers/cbdex-bot/.venv/bin/python3 execution/paper_trader.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/space/docker/containers/cbdex-bot/logs/paper_trader.log
+StandardError=append:/space/docker/containers/cbdex-bot/logs/paper_trader.log
+
+[Install]
+WantedBy=multi-user.target

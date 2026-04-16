@@ -11,6 +11,11 @@ Cost model (per trade, round-trip):
 Slippage: price impact from $50 trade on $15-30M TVL pool is ~0.0003% —
 negligible at this trade size, included as a floor.
 
+Execution latency: Base transactions confirm in ~12–20 seconds. At AERO/WETH's
+typical 1-min volatility, this adds ~10bps of adverse price movement per leg.
+Default latency_bps=10 (each way) adds a realistic execution cost floor.
+Set latency_bps=0 to reproduce the original idealised simulation.
+
 Usage:
     from backtest.simulator import Simulator
     sim = Simulator("WETH_USDC", position_usd=50.0)
@@ -47,6 +52,7 @@ class Trade:
     fee_usd: float        # round-trip pool fee
     gas_usd: float        # gas cost
     slippage_usd: float   # price impact
+    latency_usd: float    # execution latency cost (entry + exit legs)
     pnl_gross_usd: float  # before costs
     pnl_net_usd: float    # after all costs
     correct: bool
@@ -83,6 +89,10 @@ class SimulationResult:
         return sum(t.slippage_usd for t in self.trades)
 
     @property
+    def total_latency_usd(self) -> float:
+        return sum(t.latency_usd for t in self.trades)
+
+    @property
     def pnl_gross_usd(self) -> float:
         return sum(t.pnl_gross_usd for t in self.trades)
 
@@ -101,20 +111,21 @@ class SimulationResult:
 
     def summary(self) -> dict:
         return {
-            "pair":             self.pair,
-            "n_candles":        self.n_candles,
-            "n_trades":         self.n_trades,
-            "trade_rate_pct":   round(self.trade_rate_pct, 3),
-            "precision":        round(self.precision, 4),
-            "pnl_gross_usd":    round(self.pnl_gross_usd, 4),
-            "total_fee_usd":    round(self.total_fee_usd, 4),
-            "total_gas_usd":    round(self.total_gas_usd, 4),
+            "pair":               self.pair,
+            "n_candles":          self.n_candles,
+            "n_trades":           self.n_trades,
+            "trade_rate_pct":     round(self.trade_rate_pct, 3),
+            "precision":          round(self.precision, 4),
+            "pnl_gross_usd":      round(self.pnl_gross_usd, 4),
+            "total_fee_usd":      round(self.total_fee_usd, 4),
+            "total_gas_usd":      round(self.total_gas_usd, 4),
             "total_slippage_usd": round(self.total_slippage_usd, 4),
-            "pnl_net_usd":      round(self.pnl_net_usd, 4),
-            "pnl_net_pct":      round(self.pnl_net_pct, 4),
+            "total_latency_usd":  round(self.total_latency_usd, 4),
+            "pnl_net_usd":        round(self.pnl_net_usd, 4),
+            "pnl_net_pct":        round(self.pnl_net_pct, 4),
             "roi_annualised_pct": round(self.roi_annualised_pct, 2),
-            "capital_usd":      self.capital_usd,
-            "position_usd":     self.position_usd,
+            "capital_usd":        self.capital_usd,
+            "position_usd":       self.position_usd,
         }
 
 
@@ -132,11 +143,13 @@ class Simulator:
         pair: str,
         position_usd: float = 50.0,
         capital_usd: float = 1000.0,
+        latency_bps: float = 10.0,
     ):
         self.pair = pair
         self.position_usd = position_usd
         self.capital_usd = capital_usd
         self.pool_fee = POOL_FEE[pair]
+        self.latency_bps = latency_bps
 
     def _price_impact_usd(self, tvl_usd: float | None) -> float:
         """Estimate one-way price impact for position_usd trade given TVL."""
@@ -184,10 +197,11 @@ class Simulator:
                 pnl_gross = self.position_usd * (1 - math.exp(label_raw))
 
             # Costs
-            fee_usd      = self.position_usd * self.pool_fee * 2   # round-trip
+            fee_usd      = self.position_usd * self.pool_fee * 2            # round-trip
             gas_usd      = GAS_COST_USD
-            slippage_usd = self._price_impact_usd(tvl_usd) * 2     # entry + exit
-            total_cost   = fee_usd + gas_usd + slippage_usd
+            slippage_usd = self._price_impact_usd(tvl_usd) * 2             # entry + exit
+            latency_usd  = self.position_usd * (self.latency_bps / 10000) * 2  # entry + exit
+            total_cost   = fee_usd + gas_usd + slippage_usd + latency_usd
 
             pnl_net = pnl_gross - total_cost
             correct = (pred == 1 and label == 1) or (pred == -1 and label == -1)
@@ -203,6 +217,7 @@ class Simulator:
                 fee_usd=fee_usd,
                 gas_usd=gas_usd,
                 slippage_usd=slippage_usd,
+                latency_usd=latency_usd,
                 pnl_gross_usd=pnl_gross,
                 pnl_net_usd=pnl_net,
                 correct=correct,
@@ -224,6 +239,7 @@ def print_summary(result: SimulationResult, label: str = "") -> None:
     print(f"    PnL gross: ${s['pnl_gross_usd']:+.2f}  "
           f"fees: -${s['total_fee_usd']:.2f}  "
           f"gas: -${s['total_gas_usd']:.2f}  "
-          f"slippage: -${s['total_slippage_usd']:.2f}")
+          f"slippage: -${s['total_slippage_usd']:.2f}  "
+          f"latency: -${s['total_latency_usd']:.2f}")
     print(f"    PnL net: ${s['pnl_net_usd']:+.2f}  ({s['pnl_net_pct']:+.2f}% of ${s['capital_usd']:.0f} capital)")
     print(f"    Annualised ROI: {s['roi_annualised_pct']:+.1f}%")

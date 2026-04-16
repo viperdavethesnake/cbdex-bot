@@ -191,14 +191,14 @@ class LiveFeaturePipeline:
             (pl.col("close") / pl.col("close").shift(30)).log().alias("ret_30"),
             (pl.col("close") / pl.col("close").shift(60)).log().alias("ret_60"),
         ]).with_columns([
-            pl.col("ret_1").rolling_std(5).alias("vol_5"),
-            pl.col("ret_1").rolling_std(15).alias("vol_15"),
-            pl.col("ret_1").rolling_std(30).alias("vol_30"),
+            pl.col("ret_1").rolling_std(window_size=5).alias("vol_5"),
+            pl.col("ret_1").rolling_std(window_size=15).alias("vol_15"),
+            pl.col("ret_1").rolling_std(window_size=30).alias("vol_30"),
         ]).with_columns([
             (pl.col("vol_5") / pl.col("vol_30")).alias("vol_ratio"),
-            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(5)).alias("vol_rel_5"),
-            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(30)).alias("vol_rel_30"),
-            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(60)).alias("vol_rel_60"),
+            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(window_size=5)).alias("vol_rel_5"),
+            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(window_size=30)).alias("vol_rel_30"),
+            (pl.col("volume_usd") / pl.col("volume_usd").rolling_mean(window_size=60)).alias("vol_rel_60"),
         ])
 
         # Range position

@@ -33,6 +33,7 @@ from research.features import (
     AERO_REGIME_THRESHOLD,
 )
 from research.labels import attach_labels
+from research.baseline import _predict_baseline
 from backtest.simulator import Simulator, print_summary
 
 # Walk-forward parameters
@@ -136,12 +137,6 @@ def run_model(
     df = build_features(pair)
     df = attach_labels(df, pair)
 
-    if pair == "AERO_WETH":
-        before = len(df)
-        df = df.filter(pl.col("vol_15") >= AERO_REGIME_THRESHOLD)
-        if verbose:
-            print(f"  AERO regime filter: {before:,} -> {len(df):,} rows")
-
     feature_cols = FEATURE_COLS_AERO if pair == "AERO_WETH" else FEATURE_COLS_WETH
     hurdle = WETH_FEE_HURDLE if pair == "WETH_USDC" else AERO_FEE_HURDLE
 
@@ -160,6 +155,11 @@ def run_model(
             (pl.col("timestamp") >= val_start) &
             (pl.col("timestamp") <  val_end)
         )
+
+        # Regime filter applied per-fold (after split) to avoid threshold leakage
+        if pair == "AERO_WETH":
+            train_df = train_df.filter(pl.col("vol_15") >= AERO_REGIME_THRESHOLD)
+            val_df   = val_df.filter(pl.col("vol_15") >= AERO_REGIME_THRESHOLD)
 
         if len(train_df) < 500 or len(val_df) < 10:
             if verbose:
@@ -213,8 +213,15 @@ def run_model(
         )
         top5 = [(f, round(imp, 4)) for f, imp in importances[:5]]
 
+        # Baseline comparison — must beat naive momentum to be worth deploying
+        baseline_val = _predict_baseline(val_df, hurdle)
+        baseline_result = sim.run(baseline_val)
+
         if verbose:
-            print_summary(result, label=f"Fold {fold+1}")
+            print_summary(result, label=f"Fold {fold+1} RF")
+            print_summary(baseline_result, label=f"Fold {fold+1} baseline")
+            beat = "✓ RF beats baseline" if result.pnl_net_usd > baseline_result.pnl_net_usd else "✗ RF loses to baseline"
+            print(f"    {beat}  (RF ${result.pnl_net_usd:+.2f} vs baseline ${baseline_result.pnl_net_usd:+.2f})")
             print(f"    Top features: {top5}")
             _print_confusion(val_pred, fold + 1)
             if fold == 1:   # fold 2 only — threshold grid
@@ -224,11 +231,13 @@ def run_model(
                     print(f"      t={t:.2f}  net=${net:+.2f}  trades={trades}{marker}")
 
         s = result.summary()
-        s["fold"] = fold + 1
-        s["val_start"] = str(val_start)[:10]
-        s["val_end"]   = str(val_end)[:10]
-        s["threshold"] = best_t
-        s["top_features"] = top5
+        s["fold"]             = fold + 1
+        s["val_start"]        = str(val_start)[:10]
+        s["val_end"]          = str(val_end)[:10]
+        s["threshold"]        = best_t
+        s["top_features"]     = top5
+        s["baseline_pnl_net"] = round(baseline_result.pnl_net_usd, 4)
+        s["beats_baseline"]   = result.pnl_net_usd > baseline_result.pnl_net_usd
         fold_results.append(s)
 
     if verbose and fold_results:

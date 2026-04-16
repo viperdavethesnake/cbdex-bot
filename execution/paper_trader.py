@@ -23,6 +23,9 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Warn at startup if training data is older than this many days
+DATA_FRESHNESS_WARN_DAYS = 14
+
 import polars as pl
 from dotenv import load_dotenv
 
@@ -100,9 +103,32 @@ class DailyLossTracker:
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
+def _check_data_freshness() -> None:
+    """Warn at startup if training parquet files are older than DATA_FRESHNESS_WARN_DAYS."""
+    import polars as pl
+    paths = [
+        Path("data/base_mainnet/pairs/AERO_WETH/final_90d.parquet"),
+        Path("data/base_mainnet/pairs/WETH_USDC/final_90d.parquet"),
+        Path("data/base_mainnet/network/gas_prices_90d.parquet"),
+    ]
+    now = datetime.now(timezone.utc)
+    for p in paths:
+        if not p.exists():
+            log.warning("Training data missing: %s", p)
+            continue
+        mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+        age_days = (now - mtime).days
+        if age_days > DATA_FRESHNESS_WARN_DAYS:
+            log.warning(
+                "Training data stale: %s is %d days old — model may be misaligned with current regime",
+                p, age_days,
+            )
+
+
 def run_paper_trader() -> None:
     log.info("Paper trader starting  pair=AERO/WETH  capital=$%.0f  position=$%.0f",
              CAPITAL_USD, POSITION_USD)
+    _check_data_freshness()
 
     model    = load_model()
     pipeline = LiveFeaturePipeline()
@@ -178,6 +204,9 @@ def run_paper_trader() -> None:
                 "cumulative_pnl_usd": round(cumulative_pnl, 4),
             })
             open_position = None
+
+        # Heartbeat on every tick (written again below on signal path too)
+        Path("logs/heartbeat").write_text(datetime.now(timezone.utc).isoformat())
 
         # Stale data gate — don't open new positions on data older than 5 minutes
         data_age = features.get("data_age_min", 0)
