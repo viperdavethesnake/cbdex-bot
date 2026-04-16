@@ -205,7 +205,9 @@ class LiveFeaturePipeline:
         # without affecting the prediction.
         from research.features import FEATURE_COLS_AERO
         available = [c for c in FEATURE_COLS_AERO if c in df.columns]
-        row = df.select(available).drop_nulls().tail(1)
+        # Include close for price logging — drop_nulls scoped to feature cols only
+        extra = [c for c in ["close"] if c in df.columns and c not in available]
+        row = df.select(available + extra).drop_nulls(subset=available).tail(1)
         if len(row) == 0:
             log.warning("All rows null after feature computation")
             return None
