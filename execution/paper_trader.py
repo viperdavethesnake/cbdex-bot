@@ -46,7 +46,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     handlers=[
-        logging.StreamHandler(),
         logging.FileHandler("logs/paper_trader.log"),
     ],
 )
@@ -113,7 +112,7 @@ def run_paper_trader() -> None:
     idx_short = classes.index(-1) if -1 in classes else None
 
     cumulative_pnl = 0.0
-    prev_close     = None
+    open_position  = None   # {direction, entry_price, entry_candle_ts, entry_ts}
 
     while True:
         # Kill switch
@@ -129,7 +128,7 @@ def run_paper_trader() -> None:
             continue
 
         try:
-            features = pipeline.get_features(weth_usd_price=prev_close)
+            features = pipeline.get_features()
         except Exception as e:
             log.warning(f"Feature fetch failed: {e}  retrying in 30s")
             time.sleep(30)
@@ -140,14 +139,75 @@ def run_paper_trader() -> None:
             time.sleep(60)
             continue
 
+        current_close  = features.get("close")
+        current_candle = features.get("candle_ts")
+        ts = datetime.now(timezone.utc).isoformat()
+
+        # Close any open 1-bar position once the candle has actually advanced.
+        # Guard against stale data: if candle_ts hasn't changed, the price hasn't
+        # moved yet and we'd log a $0 close before the bar is complete.
+        if (open_position is not None
+                and current_close is not None
+                and current_candle != open_position["entry_candle_ts"]):
+            entry     = open_position["entry_price"]
+            direction = open_position["direction"]
+            label_raw = math.log(current_close / entry)
+            if direction == "LONG":
+                pnl_gross = POSITION_USD * (math.exp(label_raw) - 1)
+            else:
+                pnl_gross = POSITION_USD * (1 - math.exp(label_raw))
+            fee_usd        = POSITION_USD * POOL_FEE_RT
+            pnl_net        = pnl_gross - fee_usd - GAS_EST_USD
+            cumulative_pnl += pnl_net
+            tracker.record(pnl_net)
+            log.info(
+                "CLOSE %s  entry=%.6f  exit=%.6f  pnl_net=$%.4f  cumulative=$%.4f",
+                direction, entry, current_close, pnl_net, cumulative_pnl,
+            )
+            log_trade({
+                "timestamp":          ts,
+                "event":              "close",
+                "direction":          direction,
+                "entry_price":        entry,
+                "exit_price":         current_close,
+                "label_raw":          round(label_raw, 6),
+                "pnl_gross_usd":      round(pnl_gross, 4),
+                "fee_usd":            round(fee_usd, 4),
+                "gas_est_usd":        GAS_EST_USD,
+                "pnl_net_usd":        round(pnl_net, 4),
+                "cumulative_pnl_usd": round(cumulative_pnl, 4),
+            })
+            open_position = None
+
+        # Stale data gate — don't open new positions on data older than 5 minutes
+        data_age = features.get("data_age_min", 0)
+        if data_age > 5:
+            log.warning("Data stale (%.1fmin) — skipping signal", data_age)
+            now  = time.time()
+            wait = 60 - (now % 60) + 1
+            time.sleep(wait)
+            continue
+
         # Regime filter
         if features.get("vol_15", 0) < AERO_REGIME_THRESHOLD:
-            log.info("Regime filter: low volatility. HOLD.")
+            log.info(
+                "Regime filter: low volatility. HOLD.  "
+                "vol_15=%.6f  data_age=%.1fmin",
+                features.get("vol_15", 0),
+                features.get("data_age_min", 0),
+            )
+            time.sleep(60)
+            continue
+
+        # Missing feature guard
+        missing = [c for c in FEATURE_COLS_AERO if c not in features]
+        if missing:
+            log.warning("Missing features %s — skipping signal", missing)
             time.sleep(60)
             continue
 
         # Model prediction
-        feat_vec = [[features.get(c, 0.0) for c in FEATURE_COLS_AERO]]
+        feat_vec = [[features[c] for c in FEATURE_COLS_AERO]]
         probs    = model.predict_proba(feat_vec)[0]
         p_long   = float(probs[idx_long])  if idx_long  is not None else 0.0
         p_short  = float(probs[idx_short]) if idx_short is not None else 0.0
@@ -159,30 +219,35 @@ def run_paper_trader() -> None:
         else:
             signal = "HOLD"
 
-        ts  = datetime.now(timezone.utc).isoformat()
         rec = {
-            "timestamp":   ts,
-            "signal":      signal,
-            "p_long":      round(p_long,  4),
-            "p_short":     round(p_short, 4),
-            "vol_15":      round(features.get("vol_15", 0), 6),
-            "ret_1":       round(features.get("ret_1",  0), 6),
-            "close":       features.get("close", None),  # not in feature vec, pulled separately
+            "timestamp":          ts,
+            "event":              "signal",
+            "signal":             signal,
+            "p_long":             round(p_long,  4),
+            "p_short":            round(p_short, 4),
+            "vol_15":             round(features.get("vol_15", 0), 6),
+            "ret_1":              round(features.get("ret_1",  0), 6),
+            "close":              current_close,
+            "data_age_min":       features.get("data_age_min", None),
             "cumulative_pnl_usd": round(cumulative_pnl, 4),
         }
 
         if signal != "HOLD":
-            # Hypothetical PnL will be filled in next iteration when close is known
-            rec["position_usd"]    = POSITION_USD
-            rec["fee_usd"]         = round(POSITION_USD * POOL_FEE_RT, 4)
-            rec["gas_est_usd"]     = GAS_EST_USD
+            open_position = {
+                "direction":       signal,
+                "entry_price":     current_close,
+                "entry_candle_ts": current_candle,
+                "entry_ts":        ts,
+            }
+            rec["position_usd"] = POSITION_USD
+            rec["fee_usd"]      = round(POSITION_USD * POOL_FEE_RT, 4)
+            rec["gas_est_usd"]  = GAS_EST_USD
             log.info(
-                f"SIGNAL {signal}  p_long={p_long:.3f}  p_short={p_short:.3f}  "
-                f"vol_15={features.get('vol_15', 0):.4f}"
+                "SIGNAL %s  p_long=%.3f  p_short=%.3f  vol_15=%.4f",
+                signal, p_long, p_short, features.get("vol_15", 0),
             )
 
         log_trade(rec)
-        prev_close = features.get("close")
 
         # Sleep until next candle close (~60s, aligned to minute boundary)
         now  = time.time()

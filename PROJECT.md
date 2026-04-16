@@ -13,7 +13,7 @@ A Python-based automated trading bot targeting decentralized exchanges (DEXs) on
 
 | Category | Choice |
 |---|---|
-| Language | Python 3.12 |
+| Language | Python 3.13 |
 | Blockchain Interface | `web3.py` (JSON-RPC) |
 | RPC Provider | Alchemy, QuickNode, or similar (Base Mainnet + Base Sepolia) |
 | Data Source | The Graph (GraphQL) or DEX-specific indexers for historicals; RPC for live data |
@@ -60,30 +60,33 @@ project/
 
 ## 5. Phases and Milestones
 
-### Phase 0 — Foundation
-- [ ] Project repo initialized with structure above.
-- [ ] Docker + macvlan environment verified.
-- [ ] Connection to Base RPC (Mainnet & Sepolia) established via `web3.py`.
-- [ ] Ability to read real-time pool prices and liquidity from a DEX contract.
+### Phase 0 — Foundation ✅
+- [x] Project repo initialized with structure above.
+- [x] Docker + macvlan environment verified.
+- [x] Connection to Base RPC (Mainnet) established via `web3.py`.
+- [x] Ability to read real-time pool prices and liquidity from a DEX contract.
 
-### Phase 1 — Backtest & Research
-- [ ] **Data Ingestion:** Pull 30–90 days of 1m data (OHLCV + Liquidity + Gas) for target pairs.
-- [ ] **Feature Engineering:** Create relative volume and volatility indicators using Polars.
-- [ ] **Backtest Engine:** Build a "Gas-Aware" simulator (every trade must subtract Base gas fees).
-- [ ] **Slippage Modeling:** Implement a "Price Impact" function based on pool depth.
-- [ ] **ML Training:** Train model using Walk-Forward validation; outperform simple buy-and-hold after gas/slippage.
+### Phase 1 — Data Ingestion ✅
+- [x] **Data Ingestion:** 90 days of 1-min OHLCV + Liquidity + Gas for WETH/USDC and AERO/WETH.
+- [x] **WETH/USDC:** The Graph CL subgraph — 126,000 rows, audit PASS (MAE < 0.10%, Volume Error < 1%).
+- [x] **AERO/WETH:** eth_getLogs direct (GeckoTerminal gaps confirmed; The Graph GEN is CL-only) — 33,053 rows.
+- [x] **Gas data:** 129,600 rows, `baseFeePerGas` via Alchemy.
 
-### Phase 2 — Paper Trading (Testnet)
-- [ ] **Execution Layer:** Abstracted interface to switch between Base Sepolia and Base Mainnet.
-- [ ] **Testnet Deployment:** Deploy bot on Base Sepolia using test-ETH.
-- [ ] **Latency Check:** Measure time from signal generation to transaction confirmation.
-- [ ] **Slippage Tuning:** Verify that `minAmountOut` parameters correctly prevent bad fills.
-- [ ] **Overfit Detector:** Compare Testnet performance against Backtest expectations.
+### Phase 2 — ML Model + Paper Trading 🟢
+- [x] **Feature Engineering:** 21-feature set — momentum, volatility, relative volume, range position, TVL, gas, time, gap features.
+- [x] **Backtest Engine:** Gas-aware + slippage-aware event-driven simulator (`backtest/simulator.py`).
+- [x] **ML Training:** Walk-forward RF on AERO/WETH — precision 0.600, ann. ROI +5.8% after costs.
+- [x] **WETH/USDC ML:** Precision 0.238 at 1-min — not viable. Shelved for 5/15-min future investigation.
+- [x] **Paper Trading:** `execution/paper_trader.py` running live on mainnet data (no real funds).
+  - 1-bar hold strategy, regime filter (vol_15 ≥ 0.0098), signal threshold 0.70
+  - JSONL logging: signal events + close events with realized PnL
+  - Kill switch (`.kill` file), daily loss limit ($50), stale data gate
+- [ ] **Validation:** Accumulate 1–2 weeks of paper trade data before live deployment.
 
 ### Phase 3 — Live Trading
 - [ ] **Wallet Funding:** Fund a dedicated "Hot Wallet" with a strict capital cap.
-- [ ] **Risk Limits:** Enable hard-coded caps on position size and daily loss.
-- [ ] **Small-Scale Launch:** Start with minimum viable positions ($50–100).
+- [ ] **Risk Limits:** Hard-coded caps on position size and daily loss (already implemented in paper trader).
+- [ ] **Small-Scale Launch:** Start with minimum viable positions ($50).
 - [ ] **Scaling:** Increase capital only after 30 days of consistent performance.
 
 ---

@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 # Pool addresses
 POOL_AERO_WETH = "0x7f670f78b17dec44d5ef68a48740b6f8849cc2e6"
+POOL_WETH_USDC = "0xb2cc224c1c9feE385f8ad6a55b4d94E92359DC59"
 
 # Public Base RPC for eth_getLogs — Alchemy rejects getLogs with 400 on this key.
 # mainnet.base.org is the same endpoint proven to work in aero_weth_pipeline.py.
@@ -53,10 +54,11 @@ class LiveFeaturePipeline:
         pool:    str = POOL_AERO_WETH,
         rpc_url: str | None = None,
     ):
-        self.pool    = Web3.to_checksum_address(pool)
-        self.rpc_url = rpc_url or os.environ["BASE_RPC_URL"]
-        self.w3      = Web3(Web3.HTTPProvider(self.rpc_url))
-        self.client  = httpx.Client(timeout=15)
+        self.pool              = Web3.to_checksum_address(pool)
+        self.rpc_url           = rpc_url or os.environ["BASE_RPC_URL"]
+        self.w3                = Web3(Web3.HTTPProvider(self.rpc_url))
+        self.client            = httpx.Client(timeout=15)
+        self._last_candle_ts   = None  # tracks freshness across calls
 
     # ── Data fetching ──────────────────────────────────────────────────────────
 
@@ -84,6 +86,22 @@ class LiveFeaturePipeline:
             pl.col("close").cast(pl.Float64),
             pl.col("volume_usd").cast(pl.Float64),
         ])
+
+    def fetch_weth_usd(self) -> float | None:
+        """Return current WETH/USD price from the WETH/USDC pool on GeckoTerminal."""
+        try:
+            url    = GECKO_URL.format(pool=POOL_WETH_USDC)
+            params = {"aggregate": 1, "limit": 2, "currency": "usd"}
+            resp   = self.client.get(url, params=params)
+            resp.raise_for_status()
+            raw = resp.json()["data"]["attributes"]["ohlcv_list"]
+            if not raw:
+                return None
+            # ohlcv_list is descending (newest first); index 0 = most recent candle close
+            return float(raw[0][4])
+        except Exception as e:
+            log.warning(f"WETH/USD price fetch failed: {e}")
+            return None
 
     def fetch_gas(self) -> float:
         """Return current baseFeePerGas in Gwei."""
@@ -132,21 +150,34 @@ class LiveFeaturePipeline:
 
     # ── Feature computation ────────────────────────────────────────────────────
 
-    def get_features(self, weth_usd_price: float | None = None) -> dict | None:
+    def get_features(self) -> dict | None:
         """
         Compute live feature vector for the current candle.
 
         Returns dict with all 21 AERO/WETH features, or None if insufficient data.
         Features match exactly the training feature set in research/features.py.
+        Also includes: data_age_min (float), candle_ts (datetime) for caller bookkeeping.
         """
         df = self.fetch_ohlcv(n_candles=MIN_CANDLES)
         if len(df) < MIN_CANDLES - 5:
             log.warning(f"Insufficient candles: {len(df)} < {MIN_CANDLES}")
             return None
 
+        # Staleness detection: track how old the newest candle is
+        latest_ts  = df["timestamp"].max()
+        now_utc    = datetime.now(timezone.utc)
+        data_age_s = (now_utc - latest_ts).total_seconds()
+        data_age_min = round(data_age_s / 60, 1)
+        if self._last_candle_ts is not None and latest_ts == self._last_candle_ts:
+            log.warning(f"GeckoTerminal data unchanged since last call (age={data_age_min}min)")
+        elif data_age_min > 5:
+            log.warning(f"GeckoTerminal data stale: latest candle is {data_age_min}min old")
+        self._last_candle_ts = latest_ts
+
         gas_gwei  = self.fetch_gas()
+        weth_usd  = self.fetch_weth_usd()
         reserve0  = self.fetch_tvl()
-        tvl_usd   = (2 * reserve0 * weth_usd_price) if (reserve0 and weth_usd_price) else None
+        tvl_usd   = (2 * reserve0 * weth_usd) if (reserve0 and weth_usd) else None
 
         # Add gas column (uniform for join compatibility)
         df = df.with_columns(pl.lit(gas_gwei).alias("base_fee_gwei"))
@@ -212,4 +243,7 @@ class LiveFeaturePipeline:
             log.warning("All rows null after feature computation")
             return None
 
-        return row.to_dicts()[0]
+        result = row.to_dicts()[0]
+        result["data_age_min"] = data_age_min
+        result["candle_ts"]    = latest_ts
+        return result

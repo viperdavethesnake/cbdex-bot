@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working in this
 
 **cbdex-bot** is a Python trading bot targeting Aerodrome Finance DEX pools on Base mainnet (Chain ID: 8453). Executes swaps directly via the Aerodrome Router smart contract using web3.py.
 
-**Current phase:** Phase 2 — Feature Engineering and Backtesting. Phase 1 Data Collection is COMPLETE.
+**Current phase:** Phase 2 — Paper Trading active on AERO/WETH. Phases 1 (Data) and 2 (ML Model) are COMPLETE.
 
 ## Environment
 
@@ -109,6 +109,38 @@ Direct Aerodrome Router via web3.py. **Coinbase UI must not be used** — ~1% se
 - **Features:** 1-min OHLCV, pool TVL, gas price, relative volume
 - **Training:** Walk-forward — 60-day train → 7-day validate → slide
 - **AERO/WETH regime filter:** Execute only when realized 1-min volatility > 1.5× fee hurdle (~0.98%/min). Active ~25% of minutes.
+- **Model saved:** `models/aero_weth_rf.pkl` — Random Forest, threshold 0.70, precision 0.600, ann. ROI +5.8%
+- **WETH/USDC:** Not viable at 1-min resolution (precision 0.238). Shelved for future 5/15-min investigation.
+
+## Paper Trading (Phase 2 — Active)
+
+Paper trader runs as a background OS process, **survives session disconnects but not server reboots**.
+
+```bash
+# Check it's alive
+pgrep -fa "paper_trader"
+
+# Tail recent signals and closes
+tail -20 logs/paper_trades.jsonl | python3 -m json.tool
+
+# Restart if dead
+source .venv/bin/activate
+PYTHONPATH=. python3 execution/paper_trader.py >> logs/paper_trader.log 2>&1 &
+```
+
+**JSONL record types:**
+- `"event": "signal"` — model evaluated; includes `signal`, `p_long`, `p_short`, `vol_15`, `ret_1`, `close`, `data_age_min`
+- `"event": "close"` — 1-bar position closed; includes `direction`, `entry_price`, `exit_price`, `label_raw`, `pnl_net_usd`, `cumulative_pnl_usd`
+
+**Live feature pipeline (`execution/live_features.py`):**
+- AERO/WETH OHLCV: GeckoTerminal (65 candles)
+- WETH/USD price: GeckoTerminal WETH/USDC pool (`fetch_weth_usd`) — used to compute TVL
+- Gas: `baseFeePerGas` via Alchemy RPC
+- TVL: most recent Sync event reserves via `eth_getLogs` on `mainnet.base.org`
+- Staleness detection: warns when latest candle > 5 min old; signals blocked, closes still allowed
+- `candle_ts` returned in feature dict — paper trader uses it to guard against $0 closes on frozen candles
+
+**Known limitation:** `tvl_norm` is always 1.0 in live inference because TVL is set as a scalar constant across the 65-candle window (rolling_mean of a constant = the constant). Real fix requires fetching a 60-candle historical TVL series via eth_getLogs. Low priority for paper trading phase.
 
 ## Rate Limits
 

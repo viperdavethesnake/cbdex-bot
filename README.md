@@ -27,7 +27,7 @@ Both pools are on Aerodrome Finance, Base mainnet (Chain ID: 8453).
 
 | Requirement | Detail |
 |---|---|
-| **Python** | 3.12 |
+| **Python** | 3.13 |
 | **Storage** | Local SSD/NVMe (recommended) |
 | **Format** | Apache Parquet |
 | **RPC Provider** | Alchemy (free tier sufficient — Base mainnet) |
@@ -50,7 +50,7 @@ git clone <repo-url>
 cd cbdex-bot
 
 # 2. Create and activate virtual environment
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 
 # 3. Install dependencies
@@ -99,7 +99,7 @@ cbdex-bot/
 ├── IMPLEMENTATION_GUIDE.md         ← Step-by-step developer instructions
 ├── API_REFERENCE.md                ← Verified API endpoints and schemas
 ├── POOL_RESEARCH_FINDINGS.md       ← Pool verification and volatility research
-├── data/
+├── data/                           ← gitignored
 │   └── base_mainnet/
 │       ├── pairs/
 │       │   ├── WETH_USDC/
@@ -110,19 +110,41 @@ cbdex-bot/
 │       │       └── ...
 │       └── network/
 │           └── gas_prices_90d.parquet
+├── models/                         ← gitignored; trained model artifacts
+│   └── aero_weth_rf.pkl            ← Random Forest, threshold 0.70
+├── logs/                           ← gitignored; live paper trading output
+│   ├── paper_trader.log            ← Structured text log (INFO/WARNING)
+│   └── paper_trades.jsonl          ← Per-tick JSONL: signal + close events
 ├── ingestion/
 │   ├── fast_path.py                ← GeckoTerminal OHLCV pull
 │   ├── truth_path.py               ← The Graph swap + TVL pull
 │   └── gas.py                      ← baseFeePerGas collection
 ├── strategies/
-├── execution/
-├── risk/
+│   └── model.py                    ← Walk-forward RF training
 ├── backtest/
+│   └── simulator.py                ← Gas-aware event-driven simulator
+├── execution/
+│   ├── paper_trader.py             ← Live paper trading loop
+│   └── live_features.py            ← Real-time feature pipeline
+├── research/
+│   └── features.py                 ← Feature definitions (FEATURE_COLS_AERO etc.)
+├── risk/
 ├── monitoring/
 ├── tests/
-├── research/                       ← Archived research docs
 └── infra/
 ```
+
+---
+
+## Current Status
+
+| Phase | Pair | Status |
+|---|---|---|
+| Phase 1 — Data Ingestion | WETH/USDC | ✅ Complete — 126,000 rows, audit PASS |
+| Phase 1 — Data Ingestion | AERO/WETH | ✅ Complete — 33,053 rows (eth_getLogs direct) |
+| Phase 2 — ML Model | AERO/WETH | ✅ Complete — RF precision 0.600, ann. ROI +5.8% |
+| Phase 2 — ML Model | WETH/USDC | ⏸ Shelved — precision 0.238 at 1-min not viable |
+| Phase 2 — Paper Trading | AERO/WETH | 🟢 **Active** — `execution/paper_trader.py` running |
 
 ---
 
