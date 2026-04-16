@@ -49,13 +49,12 @@ if __name__ == "__main__":
         ("rf",     RandomForestClassifier(**RF_PARAMS)),
     ])
     model.fit(X, y)
-    model.classes_ = model.named_steps["rf"].classes_
 
     with open(MODEL_PATH, "wb") as f:
         pickle.dump(model, f)
 
     print(f"Model saved to {MODEL_PATH}")
-    print(f"Classes: {model.classes_}")
+    print(f"Classes: {model.named_steps['rf'].classes_}")
     print("Top 5 features:")
     rf = model.named_steps["rf"]
     for feat, imp in sorted(zip(FEATURE_COLS_AERO, rf.feature_importances_), key=lambda x: -x[1])[:5]:
