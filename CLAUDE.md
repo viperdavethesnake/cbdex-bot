@@ -1,26 +1,44 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project
 
-**cbdex-bot** is a Python trading bot targeting Aerodrome Finance DEX pools on Base mainnet (Chain ID: 8453). Executes swaps directly via the Aerodrome Router smart contract using web3.py.
+**cbdex-bot** is a Python trading bot targeting Aerodrome Finance DEX pools on Base mainnet (Chain ID: 8453). It collects historical market data, trains an ML model on regime-classified signals, and executes swaps directly via the Aerodrome Router smart contract using web3.py.
 
 **Current phase:** Phase 2 — Paper Trading active on AERO/WETH. Phases 1 (Data) and 2 (ML Model) are COMPLETE.
 
 ## Environment
 
-**Python:** 3.13 (system default). Python 3.12 is not installed.  
-**Venv:** `.venv/` — activate with `source .venv/bin/activate`.  
-**Packages:** Do not `pip install` anything without explicit user approval.
+**Python:** 3.13 (system default — `python3.13` or `python3`). Python 3.12 is not installed.
+**Venv:** `.venv/` — activate with `source .venv/bin/activate`.
+**Packages:** Do not `pip install` anything without explicit user approval. Use what is already in the venv.
 
 ```bash
+# .env (copy from .env.example)
 BASE_RPC_URL=https://base-mainnet.g.alchemy.com/v2/<YOUR_KEY>
 THEGRAPH_API_KEY=<YOUR_KEY>
-# GeckoTerminal: no API key required
+# GeckoTerminal requires no API key
 ```
 
-## Target Pools (LOCKED)
+## Architecture
+
+### Data Pipeline — COMPLETE
+
+```
+WETH/USDC:  GeckoTerminal → fast_path.py → candidate_90d.parquet
+                                 │
+            The Graph ──────► truth_path.py → audit.py (PASS) → final_90d.parquet
+                                                    │
+            TVL: PoolHourData (The Graph) ──────────┘
+
+AERO/WETH:  eth_getLogs (Base RPC) → aero_weth_pipeline.py → final_90d.parquet
+            TVL: Sync events → reserve0 × WETH price
+
+Gas:        eth_getBlockByNumber → gas.py → gas_prices_90d.parquet
+```
+
+### Target Pools (LOCKED — do not substitute without TRD revision)
 
 | Pair | Pool Address | Type | Fee | Min Signal | Candles |
 |---|---|---|---|---|---|
@@ -29,32 +47,29 @@ THEGRAPH_API_KEY=<YOUR_KEY>
 
 **Aerodrome Router (verified on BaseScan):** `0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43`
 
-## Critical: Per-Pair Ingestion Methods
+### Critical: Per-Pair Ingestion Methods
 
-**WETH/USDC:** The Graph CL subgraph (`nZnftbmERiB2tY6t2ika7kP9srTcKnYFEnqG3RKa38r`) via `truth_path.py`.
+**WETH/USDC:** The Graph CL subgraph (`nZnftbmERiB2tY6t2ika7kP9srTcKnYFEnqG3RKa38r`) — use `truth_path.py`.
 
-**AERO/WETH:** eth_getLogs via Base RPC via `aero_weth_pipeline.py`.
-- The Graph GEN subgraph indexes CL (Slipstream) pools ONLY. Querying Classic vAMM pool `0x7f670f78...` returns null. Do NOT attempt The Graph for Classic vAMM pools.
-- GeckoTerminal rejected — confirmed coverage gaps on this sparse pair.
-- eth_getLogs is the correct and complete source for AERO/WETH.
+**AERO/WETH:** eth_getLogs via Base RPC — use `aero_weth_pipeline.py`. The Graph GEN subgraph (`GENunSHWLBXm59mBSgPzQ8metBEp9YDfdqwFr91Av1UM`) indexes CL (Slipstream) pools ONLY — it returns null for Classic vAMM pools. Do NOT attempt to query Classic vAMM pools via The Graph. GeckoTerminal also rejected for this pair — it has confirmed coverage gaps (sparse pair). eth_getLogs is both the correct and complete source.
 
-## Pool Type Branching
+### Pool Type Branching (Critical)
 
 **WETH/USDC (CL):** Price from `sqrtPriceX96`:
 ```python
 price = (sqrtPriceX96 / 2**96) ** 2 * (10**18) / (10**6)
 ```
 
-**AERO/WETH (Classic vAMM):** Token ordering: token0=WETH, token1=AERO.
+**AERO/WETH (Classic vAMM):** Token ordering: token0=WETH, token1=AERO. Price from swap amounts:
 ```python
 price_weth_per_aero = amount0In / amount1Out   # selling AERO
 price_weth_per_aero = amount0Out / amount1In   # buying AERO
 ```
-Multiply by WETH/USD price from WETH/USDC `final_90d.parquet` for USD/AERO.
+Multiply by WETH/USD price (from WETH/USDC `final_90d.parquet`) for USD/AERO.
 
-## The Graph Pagination (WETH/USDC only)
+### The Graph Pagination (WETH/USDC only)
 
-**Always use `id_gt`. Never use `$skip`** — hard ceiling of 5,000 records.
+**Always use `id_gt` cursor pagination. Never use `$skip`.** Hard ceiling of 5,000 records — all audit windows exceeded 22,000+ swaps.
 
 ```python
 last_id = ""
@@ -72,24 +87,28 @@ Subgraph IDs:
 - CL (WETH/USDC): `nZnftbmERiB2tY6t2ika7kP9srTcKnYFEnqG3RKa38r`
 - Classic (AERO/WETH): **Does not exist** — use eth_getLogs
 
-## Audit Gate (TRD v1.5 — WETH/USDC only)
+### Audit Gate (TRD v1.5 — applies to WETH/USDC only)
 
 | Metric | Target |
 |---|---|
 | MAE | < 0.10% |
 | Volume Error | < 1% |
-| Dropped Candles | 0 (volume ≥ $0.01 threshold; zero-volume ghost candles excluded) |
+| Dropped Candles | 0 (zero-volume ghost candles excluded — volume ≥ $0.01 threshold) |
 
 Pearson correlation: **not used** — removed in TRD v1.5.
 
-## Data — Phase 1 Complete
+### AERO/WETH Regime Filter
+
+Execute only when realized 1-min volatility exceeds 1.5× fee hurdle (~0.98%/min). AERO/WETH is active ~25% of minutes — the regime filter gates out the quiet 75%.
+
+### Storage Schema
 
 ```
 data/base_mainnet/
 ├── pairs/
 │   ├── WETH_USDC/
-│   │   ├── candidate_90d.parquet    # GeckoTerminal Fast Path (tvl_usd = null)
-│   │   ├── final_90d.parquet        # Approved + TVL (~129,600 rows)
+│   │   ├── candidate_90d.parquet    # Fast Path OHLCV (tvl_usd = null)
+│   │   ├── final_90d.parquet        # Approved + TVL populated (~129,600 rows)
 │   │   └── audit_log.json           # PASS, trd_version: v1.5
 │   └── AERO_WETH/
 │       ├── candidate_90d.parquet    # GeckoTerminal (rejected — gaps confirmed)
@@ -99,11 +118,11 @@ data/base_mainnet/
     └── gas_prices_90d.parquet       # 129,600 rows, 0.0005–2.9245 Gwei
 ```
 
-## Execution Path (Production)
+### Execution Path (Production)
 
-Direct Aerodrome Router via web3.py. **Coinbase UI must not be used** — ~1% service fee makes round-trip costs ~2.1–2.6%, far above minimum signal thresholds.
+Production swaps call the Aerodrome Router directly via web3.py. **Coinbase Wallet / UI must not be used** — it routes through 0x + 1inch and adds ~1% service fee per swap.
 
-## ML Strategy (Phase 2)
+### ML Strategy (Phase 2)
 
 - **Label:** Log return `ln(P_t+1 / P_t)` at t+1
 - **Features:** 21 features — 1-min OHLCV, pool TVL, gas price, relative volume, time, gap
@@ -180,18 +199,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now cbdex-paper-trader c
 
 | Source | Limit | Sleep |
 |---|---|---|
-| GeckoTerminal | 30 req/min | 2.1s between calls |
-| The Graph | 100K queries/month | 0.25s between pages |
-| Alchemy (Base RPC) | 30M CU/month | 50ms (20 req/sec) |
+| GeckoTerminal | 30 req/min | 2.1s between calls; 4s on 429 |
+| The Graph | 100K queries/month free | 0.25s between pages |
+| Alchemy (Base RPC) | 30M CU/month free | 50ms (20 req/sec) |
 | mainnet.base.org | 2,000 block range per eth_getLogs | — |
 
 ## Key Documents
 
 | File | Purpose |
 |---|---|
-| `TRD_v1.5.md` | Authoritative data specification |
-| `ARCHITECTURE.md` | System design and data flow |
-| `IMPLEMENTATION_GUIDE.md` | Step-by-step pipeline code |
-| `API_REFERENCE.md` | Verified API endpoints and schemas |
-| `POOL_RESEARCH_FINDINGS.md` | Pool selection rationale |
-| `PROJECT.md` | Full bot roadmap |
+| `TRD_v1.5.md` | Authoritative data specification — **do not modify** |
+| `ARCHITECTURE.md` | System design and data flow diagrams |
+| `IMPLEMENTATION_GUIDE.md` | Step-by-step code for all pipeline phases |
+| `API_REFERENCE.md` | Verified API endpoints, schemas, and pagination patterns |
+| `POOL_RESEARCH_FINDINGS.md` | Pool selection rationale and volatility profile |
+| `PROJECT.md` | Full bot roadmap (Phases 0–3) |

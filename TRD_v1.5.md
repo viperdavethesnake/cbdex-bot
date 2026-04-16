@@ -52,7 +52,7 @@ Pool addresses and types are confirmed from on-chain research (2026-04-14). Do n
 - **Candle density:** AERO/WETH produces ~33,000 candles per 90 days (vs 129,600 for WETH/USDC) — approximately 1 active minute in 4. Gaps during low-activity periods are expected and normal.
 - TVL: 2 × reserve0 (WETH) × WETH/USD price, sourced from Sync events, hourly forward-filled
 
-Both pairs require separate ingestion pipelines. A single unified approach will not work.
+Both schemas must be implemented separately. A single unified ingestion approach will not work across both pool types.
 
 ---
 
@@ -101,6 +101,7 @@ During quiet periods (which represent ~75% of minutes for this pair), the model 
 ## 5. Data Standards & Definitions
 
 ### 5.1 Volume Denomination
+- **Standard:** All volume denominated in **USD-Equivalent**.
 - **WETH/USDC:** `amountUSD` from The Graph subgraph.
 - **AERO/WETH:** `weth_amount × weth_close_price` derived from on-chain swap data and WETH/USDC `final_90d.parquet`.
 
@@ -123,56 +124,49 @@ During quiet periods (which represent ~75% of minutes for this pair), the model 
 
 ---
 
-## 6. Ingestion Methods Per Pair
+## 6. The Hybrid Ingestion Workflow
+
+### Per-Pair Ingestion Methods
 
 | Pair | Fast Path | Truth Path | TVL Source |
 |---|---|---|---|
-| WETH/USDC | GeckoTerminal (PASS ✅) | The Graph CL subgraph, `id_gt` pagination | PoolHourData (The Graph) |
-| AERO/WETH | eth_getLogs direct (GeckoTerminal rejected — gaps confirmed) | eth_getLogs via Base RPC (2,000-block chunks) | Sync events via eth_getLogs |
+| WETH/USDC | GeckoTerminal (PASS ✅) | The Graph CL subgraph | PoolHourData (The Graph) |
+| AERO/WETH | eth_getLogs direct (GeckoTerminal rejected — gaps confirmed) | eth_getLogs via Base RPC | Sync events via eth_getLogs |
 
-### WETH/USDC Pipeline
-1. GeckoTerminal Fast Path → `candidate_90d.parquet`
+### WETH/USDC — Hybrid workflow (Fast Path approved)
+
+1. Fast Path: GeckoTerminal → `candidate_90d.parquet`
 2. Stratified sampling (Spike/Flat/Mean by daily variance)
-3. The Graph Truth Path, `id_gt` cursor pagination
+3. Truth Path: The Graph CL subgraph, `id_gt` pagination
 4. Audit gate: MAE < 0.10%, Volume Error < 1%, Dropped Candles = 0 → **PASS**
 5. TVL: PoolHourData → hourly forward-fill
-6. `final_90d.parquet` with TVL populated
+6. Final: `final_90d.parquet` with TVL populated
 
-### AERO/WETH Pipeline
-1. eth_getLogs: Full 90-day Swap + Sync event pull (2,000-block chunks, public Base RPC)
+### AERO/WETH — Direct eth_getLogs (Fast Path rejected)
+
+1. eth_getLogs: Full 90-day Swap + Sync event pull via Base RPC (2,000-block chunks)
 2. Aggregate: `aggregate_classic_swaps()` → 1-minute candles
-3. TVL: Sync reserve0 × WETH price → hourly forward-fill
-4. `final_90d.parquet` written directly — eth_getLogs is ground truth
+3. TVL: Sync events → reserve0 × WETH price → hourly forward-fill
+4. Final: `final_90d.parquet` written directly — no audit gate (on-chain is ground truth)
 5. `audit_log.json`: `overall_verdict: PASS`, `method: eth_getLogs_direct`
 
 ### The Graph Pagination (WETH/USDC only)
-**Always use `id_gt` cursor pagination. Never use `$skip`.** Hard ceiling of 5,000 records — all audit windows exceeded 22,000+ swaps.
+
+**Always use `id_gt` cursor pagination. Never use `$skip`.** The `skip` parameter has a hard ceiling of 5,000 records. All three WETH/USDC audit windows exceeded 22,000+ swaps — skip would have silently failed.
 
 ---
 
-## 7. Audit Gate (TRD v1.5 — applies to WETH/USDC Fast Path validation)
+## 7. Engineering Outputs
 
-| Metric | Target | Why It Matters |
-|---|---|---|
-| **MAE** | < 0.10% | Price error must stay below minimum signal threshold |
-| **Volume Error** | < 1% | Volume feature accuracy |
-| **Dropped Candles** | 0 | Real swap activity (volume ≥ $0.01) absent from Fast Path |
-| **TVL Error** | null | No Fast Path TVL — always null |
-| **Filled Candles** | Info only | Empty minutes forward-filled — logged, not gated |
+### 7.1 Actual Ingestion Results (Phase 1 Complete)
 
-**Not included:** Pearson correlation — securities-market metric, removed in v1.5.
+| Pair | Method | Candles | Price Range | TVL Range | Status |
+|---|---|---|---|---|---|
+| WETH/USDC | GeckoTerminal + The Graph | ~129,600 | $2,071–$2,966 | — | ✅ PASS |
+| AERO/WETH | eth_getLogs direct | 33,053 | $0.2447–$0.5984 | $2.3M–$4.6M | ✅ PASS |
+| Gas | eth_getBlockByNumber | 129,600 | 0.0005–2.9245 Gwei | — | ✅ PASS |
 
----
-
-## 8. Phase 1 Results — COMPLETE ✅
-
-| Dataset | Method | Candles | Price Range | Status |
-|---|---|---|---|---|
-| WETH/USDC | GeckoTerminal + The Graph | ~129,600 | $2,071–$2,966 | ✅ PASS |
-| AERO/WETH | eth_getLogs direct | 33,053 | $0.2447–$0.5984 | ✅ PASS |
-| Gas | eth_getBlockByNumber | 129,600 | 0.0005–2.9245 Gwei | ✅ PASS |
-
-### Storage
+### 7.2 Final Storage Schema
 
 | Column | Type | Description |
 |---|---|---|
@@ -183,3 +177,26 @@ During quiet periods (which represent ~75% of minutes for this pair), the model 
 | `close` | `Float64` | Last swap price in bucket |
 | `volume_usd` | `Float64` | USD volume for the bucket |
 | `tvl_usd` | `Float64` | Hourly TVL forward-filled to 1-minute |
+
+---
+
+## 8. Audit Gate (TRD v1.5)
+
+| Metric | Target | Why It Matters |
+|---|---|---|
+| **MAE** | < 0.10% | Price error must stay below minimum signal threshold |
+| **Volume Error** | < 1% | Volume feature accuracy |
+| **Dropped Candles** | 0 | Real swap activity (volume ≥ $0.01) present in Truth but absent from Fast Path |
+| **TVL Error** | null | No Fast Path TVL — always null |
+| **Filled Candles** | Info only | Empty minutes forward-filled — logged, not gated |
+
+**Not included:** Pearson correlation — securities-market metric, removed in v1.5.
+
+---
+
+## 9. Definition of Done — Phase 1 COMPLETE ✅
+
+- [x] WETH/USDC: candidate_90d.parquet pulled, audit PASS, TVL merged, final_90d.parquet written
+- [x] AERO/WETH: 90-day eth_getLogs pull, 33,053 candles, TVL from Sync events, final_90d.parquet written
+- [x] Gas: 129,600 rows, blocks 40,836,070–44,724,040, 0 nulls
+- [x] All ingestion scripts committed: fast_path.py, truth_path.py, audit.py, gas.py, aero_weth_pipeline.py, check_subgraph.py
