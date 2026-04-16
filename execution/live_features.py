@@ -88,25 +88,40 @@ class LiveFeaturePipeline:
 
     def fetch_tvl(self) -> float | None:
         """
-        Get current TVL from the most recent Sync event.
-        TVL = 2 * reserve0 (WETH) * current WETH price.
-        Returns TVL in USD, or None if unavailable.
+        Get current WETH reserves from the most recent Sync event.
+        Uses raw httpx JSON-RPC (explicit hex block numbers) — web3.py's get_logs
+        passes integers which some RPC providers reject with 400.
+        Returns raw WETH reserve0 (wei units / 1e18), or None if unavailable.
+        Caller multiplies by weth_price to get TVL in USD.
         """
         try:
             head = self.w3.eth.block_number
-            logs = self.w3.eth.get_logs({
-                "address":   self.pool,
-                "topics":    [SYNC_TOPIC],
-                "fromBlock": head - 500,
-                "toBlock":   head,
-            })
+            resp = self.client.post(
+                self.rpc_url,
+                json={
+                    "jsonrpc": "2.0",
+                    "method":  "eth_getLogs",
+                    "params":  [{
+                        "address":   self.pool,
+                        "topics":    [SYNC_TOPIC],
+                        "fromBlock": hex(head - 500),
+                        "toBlock":   hex(head),
+                    }],
+                    "id": 1,
+                },
+            )
+            resp.raise_for_status()
+            result = resp.json()
+            if "error" in result:
+                log.warning(f"TVL RPC error: {result['error']}")
+                return None
+            logs = result.get("result", [])
             if not logs:
                 return None
-            last = logs[-1]["data"].hex().lstrip("0x") if isinstance(logs[-1]["data"], bytes) else logs[-1]["data"][2:]
-            reserve0 = int(last[:64],  16) / 1e18  # WETH
-            # Approximate WETH price from close price of last candle fetched
-            # (caller provides weth_price separately for accuracy)
-            return reserve0  # raw WETH reserves — caller multiplies by weth_price
+            last_data = logs[-1]["data"]
+            hex_data  = last_data[2:] if last_data.startswith("0x") else last_data
+            reserve0  = int(hex_data[:64], 16) / 1e18   # WETH (token0)
+            return reserve0
         except Exception as e:
             log.warning(f"TVL fetch failed: {e}")
             return None
@@ -161,9 +176,15 @@ class LiveFeaturePipeline:
                 .alias(f"range_pos_{w}")
             )
 
-        df = df.with_columns([
+        # tvl_norm: normalised TVL. Falls back to 1.0 (the distribution mean) when
+        # TVL is unavailable — neutral value, no TVL signal injected.
+        tvl_expr = (
             (pl.col("tvl_usd").forward_fill() / pl.col("tvl_usd").forward_fill().rolling_mean(60))
-            .alias("tvl_norm"),
+            if tvl_usd is not None
+            else pl.lit(1.0)
+        )
+        df = df.with_columns([
+            tvl_expr.alias("tvl_norm"),
             (pl.col("base_fee_gwei") / pl.col("base_fee_gwei").rolling_mean(60)).alias("gas_norm"),
             pl.col("base_fee_gwei").alias("gas_abs"),
         ]).with_columns([
