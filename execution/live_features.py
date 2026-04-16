@@ -33,6 +33,10 @@ log = logging.getLogger(__name__)
 # Pool addresses
 POOL_AERO_WETH = "0x7f670f78b17dec44d5ef68a48740b6f8849cc2e6"
 
+# Public Base RPC for eth_getLogs — Alchemy rejects getLogs with 400 on this key.
+# mainnet.base.org is the same endpoint proven to work in aero_weth_pipeline.py.
+PUBLIC_RPC = "https://mainnet.base.org"
+
 # Sync event topic (for TVL from reserves)
 SYNC_TOPIC = "0xcf2aa50876cdfbb541206f89af0ee78d44a2abf8d328e37fa4917f982149848a"
 
@@ -97,7 +101,7 @@ class LiveFeaturePipeline:
         try:
             head = self.w3.eth.block_number
             resp = self.client.post(
-                self.rpc_url,
+                PUBLIC_RPC,
                 json={
                     "jsonrpc": "2.0",
                     "method":  "eth_getLogs",
@@ -196,12 +200,14 @@ class LiveFeaturePipeline:
             (pl.col("gap_minutes") > 5).cast(pl.Int8).alias("post_gap")
         )
 
-        # Take last row = current candle
-        row = df.drop_nulls().tail(1)
+        # Take last row = current candle.
+        # Drop on feature columns only — tvl_usd may be null (raw reserve, not a feature)
+        # without affecting the prediction.
+        from research.features import FEATURE_COLS_AERO
+        available = [c for c in FEATURE_COLS_AERO if c in df.columns]
+        row = df.select(available).drop_nulls().tail(1)
         if len(row) == 0:
             log.warning("All rows null after feature computation")
             return None
 
-        from research.features import FEATURE_COLS_AERO
-        available = [c for c in FEATURE_COLS_AERO if c in row.columns]
-        return row.select(available).to_dicts()[0]
+        return row.to_dicts()[0]
