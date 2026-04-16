@@ -18,6 +18,8 @@ Usage:
 
 import datetime
 import math
+import pickle
+from pathlib import Path
 
 import polars as pl
 from sklearn.ensemble import RandomForestClassifier
@@ -251,6 +253,59 @@ def run_model(
     return fold_results
 
 
+MODEL_PATH = Path("models/aero_weth_rf.pkl")
+
+
+def train_final_model(
+    pair: str = "AERO_WETH",
+    save_path: Path = MODEL_PATH,
+    train_days: int = TRAIN_DAYS,
+    verbose: bool = True,
+) -> None:
+    """
+    Train the production model on the most recent `train_days` of data and save it.
+
+    Called after walk-forward eval confirms the model is profitable. The saved
+    pkl is loaded by paper_trader.py and (eventually) live execution.
+    """
+    df = build_features(pair)
+    df = attach_labels(df, pair)
+
+    feature_cols = FEATURE_COLS_AERO if pair == "AERO_WETH" else FEATURE_COLS_WETH
+
+    ts_max     = df["timestamp"].max()
+    train_start = ts_max - pl.duration(days=train_days)
+    train_df   = df.filter(pl.col("timestamp") >= train_start)
+
+    if pair == "AERO_WETH":
+        train_df = train_df.filter(pl.col("vol_15") >= AERO_REGIME_THRESHOLD)
+
+    if len(train_df) < 500:
+        raise RuntimeError(f"Insufficient training rows: {len(train_df)} < 500")
+
+    X_train = train_df[feature_cols].to_numpy()
+    y_train = train_df["label"].to_numpy()
+
+    model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("rf",     RandomForestClassifier(**RF_PARAMS)),
+    ])
+    model.fit(X_train, y_train)
+
+    save_path.parent.mkdir(exist_ok=True)
+    with open(save_path, "wb") as f:
+        pickle.dump(model, f)
+
+    if verbose:
+        classes = list(model.classes_)
+        label_counts = train_df["label"].value_counts().sort("label")
+        print(f"  Saved → {save_path}")
+        print(f"  Trained on {len(train_df):,} rows  "
+              f"({str(train_start)[:10]} → {str(ts_max)[:10]})")
+        print(f"  Classes: {classes}")
+        print(f"  Label distribution: {label_counts.to_dicts()}")
+
+
 if __name__ == "__main__":
     import sys
 
@@ -261,3 +316,9 @@ if __name__ == "__main__":
         print(f" {pair} — Random Forest Walk-Forward")
         print(f"{'='*60}")
         run_model(pair, verbose=True)
+
+    if "AERO_WETH" in pairs:
+        print(f"\n{'='*60}")
+        print(" Training final production model on most recent 60 days...")
+        print(f"{'='*60}")
+        train_final_model("AERO_WETH", verbose=True)

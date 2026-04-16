@@ -1,0 +1,13 @@
+[Unit]
+Description=cbdex Weekly Data Refresh + Model Retraining
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=david
+WorkingDirectory=/space/docker/containers/cbdex-bot
+Environment="PYTHONPATH=/space/docker/containers/cbdex-bot"
+ExecStart=/space/docker/containers/cbdex-bot/.venv/bin/python3 scripts/refresh_data_and_model.py
+StandardOutput=append:/space/docker/containers/cbdex-bot/logs/refresh.log
+StandardError=append:/space/docker/containers/cbdex-bot/logs/refresh.log
