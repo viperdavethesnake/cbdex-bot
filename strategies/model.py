@@ -41,7 +41,7 @@ VAL_DAYS   = 7
 N_FOLDS    = 4
 
 # Probability thresholds to search over training fold
-THRESHOLD_GRID = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70]
+THRESHOLD_GRID = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85]
 
 # Random Forest hyperparameters (first pass — interpretable defaults)
 RF_PARAMS = {
@@ -82,21 +82,44 @@ def _tune_threshold(
     prob_short: list[float],
     pair: str,
     position_usd: float,
-) -> float:
-    """Find threshold that maximises net PnL on the training fold."""
+) -> tuple[float, list[tuple[float, float]]]:
+    """Find threshold that maximises net PnL on the training fold.
+    Returns (best_threshold, [(threshold, net_pnl), ...]) for the full grid."""
     sim = Simulator(pair, position_usd=position_usd)
     best_threshold = 0.50
     best_net = float("-inf")
+    grid_results = []
 
     for t in THRESHOLD_GRID:
         df_t = _apply_threshold(train_df, prob_long, prob_short, t)
         result = sim.run(df_t)
         net = result.pnl_net_usd
+        trades = result.n_trades
+        grid_results.append((t, net, trades))
         if net > best_net:
             best_net = net
             best_threshold = t
 
-    return best_threshold
+    return best_threshold, grid_results
+
+
+def _print_confusion(val_pred: pl.DataFrame, fold: int) -> None:
+    """Print predicted vs actual confusion matrix (LONG/HOLD/SHORT)."""
+    labels = [-1, 0, 1]
+    names  = {-1: "SHORT", 0: "HOLD", 1: "LONG"}
+    rows   = val_pred.select(["label", "pred"]).to_dicts()
+    # matrix[actual][pred]
+    matrix = {a: {p: 0 for p in labels} for a in labels}
+    for r in rows:
+        matrix[r["label"]][r["pred"]] += 1
+    total = len(rows)
+    print(f"    Confusion matrix (fold {fold})  actual → rows, predicted → cols:")
+    header = f"    {'':8s}" + "".join(f"{'pred '+names[p]:>12s}" for p in labels)
+    print(header)
+    for a in labels:
+        row_total = sum(matrix[a].values())
+        cells = "".join(f"{matrix[a][p]:>12,}" for p in labels)
+        print(f"    act {names[a]:5s}{cells}   (n={row_total:,})")
 
 
 def run_model(
@@ -170,7 +193,7 @@ def run_model(
         train_prob_long  = [float(p[idx_long])  if idx_long  is not None else 0.0 for p in train_probs]
         train_prob_short = [float(p[idx_short]) if idx_short is not None else 0.0 for p in train_probs]
 
-        best_t = _tune_threshold(train_df, train_prob_long, train_prob_short, pair, position_usd)
+        best_t, grid = _tune_threshold(train_df, train_prob_long, train_prob_short, pair, position_usd)
         if verbose:
             print(f"    Best threshold (train): {best_t:.2f}")
 
@@ -193,6 +216,12 @@ def run_model(
         if verbose:
             print_summary(result, label=f"Fold {fold+1}")
             print(f"    Top features: {top5}")
+            _print_confusion(val_pred, fold + 1)
+            if fold == 1:   # fold 2 only — threshold grid
+                print(f"    Threshold grid (fold 2 train set):")
+                for t, net, trades in grid:
+                    marker = " ◄" if t == best_t else ""
+                    print(f"      t={t:.2f}  net=${net:+.2f}  trades={trades}{marker}")
 
         s = result.summary()
         s["fold"] = fold + 1
