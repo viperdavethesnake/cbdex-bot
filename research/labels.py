@@ -18,7 +18,7 @@ Usage:
 import polars as pl
 from research.features import WETH_FEE_HURDLE, AERO_FEE_HURDLE
 
-MAX_GAP_MINUTES = 10   # AERO/WETH: drop label if next candle is >10 min away
+MAX_GAP_MINUTES = 30   # AERO/WETH: drop label if 3rd-next candle is >30 min away
 
 
 def attach_labels(df: pl.DataFrame, pair: str) -> pl.DataFrame:
@@ -39,8 +39,8 @@ def attach_labels(df: pl.DataFrame, pair: str) -> pl.DataFrame:
 
     # Next candle log return (shift -1 = look forward one candle)
     df = df.with_columns([
-        (pl.col("close").shift(-1) / pl.col("close")).log().alias("label_raw"),
-        pl.col("timestamp").diff(n=-1).dt.total_minutes().abs().alias("next_gap_minutes"),
+        (pl.col("close").shift(-3) / pl.col("close")).log().alias("label_raw"),
+        pl.col("timestamp").diff(n=-3).dt.total_minutes().abs().alias("next_gap_minutes"),
     ])
 
     # Drop last row (no next candle)

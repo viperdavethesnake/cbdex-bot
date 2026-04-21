@@ -292,7 +292,45 @@ while True:
 
 ---
 
-## 9. Infrastructure Notes
+## 9. Live Inference Architecture (Phase 2) — Known Failure
+
+> **Status as of 2026-04-21:** Phase 2 paper trading was halted after a diagnostic confirmed that the live feature pipeline used the wrong data source. See `POSTMORTEM.md` for full details.
+
+### 9.1 Critical Constraint: Training / Live Data Source Must Match
+
+The AERO/WETH training data uses `eth_getLogs` (Swap events via Base RPC). GeckoTerminal was **explicitly rejected** for this pair during Phase 1 audit due to confirmed coverage gaps (24–60 dropped candles per 90-day window).
+
+**`execution/live_features.py` must not use GeckoTerminal for AERO/WETH OHLCV.** It must use the same eth_getLogs Swap event pipeline, implemented as a 70-minute rolling window using the decode logic in `ingestion/aero_weth_pipeline.py`.
+
+Using GeckoTerminal for live inference corrupts all rolling window features because the feed is sparse: a request for 65 minutes of 1-minute bars returns 65 active-trade candles spanning up to 4+ real hours, silently dropping silent minutes. The model then computes `vol_15` over ~60 real minutes instead of 15.
+
+### 9.2 Live Pipeline Data Sources (Corrected Spec)
+
+| Feature | Live Source | Notes |
+|---|---|---|
+| AERO/WETH OHLCV | `eth_getLogs` Swap events, `mainnet.base.org` | Same as training — NOT GeckoTerminal |
+| WETH/USD price | GeckoTerminal WETH/USDC pool | No gaps on this CL pool |
+| Gas (baseFeePerGas) | Alchemy RPC `eth_getBlock` | Same as training |
+| TVL / Sync events | `eth_getLogs` Sync events, `mainnet.base.org` | Already correct in current code |
+
+### 9.3 Block Timestamp Estimation for Live OHLCV
+
+The training pipeline maps block numbers to timestamps via `join_asof` on `gas_prices_90d.parquet`. The live pipeline needs timestamps without the gas parquet. Use linear interpolation from the head block:
+
+```python
+head_block = w3.eth.get_block("latest")
+head_ts    = head_block["timestamp"]
+head_num   = head_block["number"]
+
+# For any log entry:
+log_ts = head_ts - (head_num - int(log["blockNumber"], 16)) * 2  # ~2s/block on Base
+```
+
+Accuracy: ±2–4 seconds. Sufficient for 1-minute aggregation. This avoids per-block RPC calls.
+
+---
+
+## 10. Infrastructure Notes
 
 - **RPC Rate Limits:** Pace at 20 req/sec (50ms sleep). Full 90-day gas pull completes in under 2 hours.
 - **The Graph Rate Limits:** Free tier: 100,000 queries/month. Full fallback pull (1,000+ queries) stays within budget.
