@@ -41,7 +41,8 @@ CAPITAL_USD       = 1000.0
 DAILY_LOSS_LIMIT  = 50.0    # halt if daily paper loss > $50
 MODEL_PATH        = Path("models/aero_weth_rf.pkl")
 LOG_PATH          = Path("logs/paper_trades.jsonl")
-THRESHOLD         = 0.70
+THRESHOLD         = 0.60  # walk-forward tuned 0.55–0.65; 0.60 was most common
+HOLD_BARS         = 3     # hold each position for 3 candles before closing
 POOL_FEE_RT       = 0.006   # 0.30% * 2 (round-trip)
 GAS_EST_USD       = 0.02
 
@@ -138,7 +139,7 @@ def run_paper_trader() -> None:
     idx_short = classes.index(-1) if -1 in classes else None
 
     cumulative_pnl = 0.0
-    open_position  = None   # {direction, entry_price, entry_candle_ts, entry_ts}
+    open_position  = None   # {direction, entry_price, entry_candle_ts, last_candle_ts, bars_elapsed, entry_ts}
 
     while True:
         # Kill switch
@@ -169,41 +170,44 @@ def run_paper_trader() -> None:
         current_candle = features.get("candle_ts")
         ts = datetime.now(timezone.utc).isoformat()
 
-        # Close any open 1-bar position once the candle has actually advanced.
-        # Guard against stale data: if candle_ts hasn't changed, the price hasn't
-        # moved yet and we'd log a $0 close before the bar is complete.
-        if (open_position is not None
-                and current_close is not None
-                and current_candle != open_position["entry_candle_ts"]):
-            entry     = open_position["entry_price"]
-            direction = open_position["direction"]
-            label_raw = math.log(current_close / entry)
-            if direction == "LONG":
-                pnl_gross = POSITION_USD * (math.exp(label_raw) - 1)
-            else:
-                pnl_gross = POSITION_USD * (1 - math.exp(label_raw))
-            fee_usd        = POSITION_USD * POOL_FEE_RT
-            pnl_net        = pnl_gross - fee_usd - GAS_EST_USD
-            cumulative_pnl += pnl_net
-            tracker.record(pnl_net)
-            log.info(
-                "CLOSE %s  entry=%.6f  exit=%.6f  pnl_net=$%.4f  cumulative=$%.4f",
-                direction, entry, current_close, pnl_net, cumulative_pnl,
-            )
-            log_trade({
-                "timestamp":          ts,
-                "event":              "close",
-                "direction":          direction,
-                "entry_price":        entry,
-                "exit_price":         current_close,
-                "label_raw":          round(label_raw, 6),
-                "pnl_gross_usd":      round(pnl_gross, 4),
-                "fee_usd":            round(fee_usd, 4),
-                "gas_est_usd":        GAS_EST_USD,
-                "pnl_net_usd":        round(pnl_net, 4),
-                "cumulative_pnl_usd": round(cumulative_pnl, 4),
-            })
-            open_position = None
+        # Advance bar count when candle_ts has moved (guard against stale/frozen data).
+        # Close after HOLD_BARS candles have elapsed since entry.
+        if open_position is not None and current_close is not None:
+            if current_candle != open_position["last_candle_ts"]:
+                open_position["bars_elapsed"] += 1
+                open_position["last_candle_ts"] = current_candle
+
+            if open_position["bars_elapsed"] >= HOLD_BARS:
+                entry     = open_position["entry_price"]
+                direction = open_position["direction"]
+                label_raw = math.log(current_close / entry)
+                if direction == "LONG":
+                    pnl_gross = POSITION_USD * (math.exp(label_raw) - 1)
+                else:
+                    pnl_gross = POSITION_USD * (1 - math.exp(label_raw))
+                fee_usd        = POSITION_USD * POOL_FEE_RT
+                pnl_net        = pnl_gross - fee_usd - GAS_EST_USD
+                cumulative_pnl += pnl_net
+                tracker.record(pnl_net)
+                log.info(
+                    "CLOSE %s  entry=%.6f  exit=%.6f  bars=%d  pnl_net=$%.4f  cumulative=$%.4f",
+                    direction, entry, current_close, open_position["bars_elapsed"], pnl_net, cumulative_pnl,
+                )
+                log_trade({
+                    "timestamp":          ts,
+                    "event":              "close",
+                    "direction":          direction,
+                    "entry_price":        entry,
+                    "exit_price":         current_close,
+                    "bars_held":          open_position["bars_elapsed"],
+                    "label_raw":          round(label_raw, 6),
+                    "pnl_gross_usd":      round(pnl_gross, 4),
+                    "fee_usd":            round(fee_usd, 4),
+                    "gas_est_usd":        GAS_EST_USD,
+                    "pnl_net_usd":        round(pnl_net, 4),
+                    "cumulative_pnl_usd": round(cumulative_pnl, 4),
+                })
+                open_position = None
 
         # Heartbeat on every tick (written again below on signal path too)
         Path("logs/heartbeat").write_text(datetime.now(timezone.utc).isoformat())
@@ -266,6 +270,8 @@ def run_paper_trader() -> None:
                 "direction":       signal,
                 "entry_price":     current_close,
                 "entry_candle_ts": current_candle,
+                "last_candle_ts":  current_candle,
+                "bars_elapsed":    0,
                 "entry_ts":        ts,
             }
             rec["position_usd"] = POSITION_USD
